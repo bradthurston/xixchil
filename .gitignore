@@ -34,3 +34,6 @@ __pycache__/
 # capture test output
 tools/capture.pcap
 commit-msg.txt
+
+# staged copies made by tools/verify_attacks.mjs
+.verify-attacks/

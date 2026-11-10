@@ -144,13 +144,15 @@ button.danger  { background: #3a1a17; border-color: #5c2a25; color: #ffb3ad; }
   font-size: 11px; text-transform: uppercase; letter-spacing: .7px;
   color: var(--muted); font-weight: 650;
 }
-.field select {
+.field select, .field input {
   font: inherit; font-weight: 600; color: var(--text);
   background: var(--surface-2); border: 1px solid var(--line);
   border-radius: 10px; padding: 10px 12px; width: 100%;
   -webkit-appearance: none; appearance: none;
 }
-.field select:disabled { opacity: .45; }
+.field input { font-weight: 500; font-size: 13px; }
+.field input::placeholder { color: #5a6672; font-weight: 400; }
+.field select:disabled, .field input:disabled { opacity: .45; }
 
 #capStats { margin-top: 12px; }
 #capStats .kv { font-size: 12.5px; }
@@ -306,3 +308,101 @@ button.danger  { background: #3a1a17; border-color: #5c2a25; color: #ffb3ad; }
 .rmeta { font-size: 11.5px; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
 .rnote { font-size: 12px; color: var(--muted); margin-top: 5px; }
 .rogueitem.void .rnote { color: #ffd9a3; }
+
+/* ── attack (stage 4) ───────────────────────────────────── */
+/* The list is built to read as a status board: what each attack needs, and
+   whether it has it. A blocked entry is not hidden — the gap is the point. */
+
+.atklist { display: flex; flex-direction: column; gap: 10px; }
+
+.atk {
+  border: 1px solid var(--line); border-left-width: 3px;
+  border-radius: 11px; padding: 11px 12px; background: var(--surface-2);
+}
+.atk.ready   { border-left-color: var(--ok); }
+.atk.blocked { border-left-color: #3a434e; }
+
+.atkhead { display: flex; align-items: flex-start; gap: 10px; }
+.atkicon { flex: none; color: var(--muted); padding-top: 1px; }
+.atk.ready .atkicon { color: var(--ok); }
+.atkmain { flex: 1; min-width: 0; }
+.atkname { font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+.atkmeta {
+  font-size: 11px; color: var(--muted); margin-top: 2px;
+  letter-spacing: .3px; text-transform: uppercase;
+}
+
+.atkstate {
+  flex: none; font-size: 9.5px; font-weight: 700; letter-spacing: .6px;
+  text-transform: uppercase; padding: 3px 7px; border-radius: 6px;
+  border: 1px solid var(--line); color: var(--muted);
+}
+.atkstate.ready   { color: var(--ok);  border-color: #1d4630; background: #0f1f16; }
+.atkstate.blocked { color: var(--muted); background: var(--surface); }
+
+.atktag { font-size: 12.5px; color: #b9c4d0; margin-top: 7px; }
+
+/* Blockers: the unmet requirement is named first, then why it is unmet. */
+.blockers { list-style: none; margin: 8px 0 0; padding: 0; }
+.blockers li {
+  font-size: 12px; color: var(--muted); padding: 2.5px 0 2.5px 10px;
+  border-left: 2px solid #3a434e; margin-bottom: 4px; overflow-wrap: anywhere;
+}
+.bneed {
+  display: inline-block; font-size: 9.5px; font-weight: 700;
+  letter-spacing: .5px; text-transform: uppercase; color: var(--warn);
+  margin-right: 6px;
+}
+
+/* The crack box: extraction result, live search, or the recovered passphrase. */
+.crackbox {
+  margin-top: 9px; padding: 10px 11px; border-radius: 10px;
+  background: var(--surface); border: 1px solid var(--line);
+}
+.crackbox.win { border-color: #2b6b45; background: #0f1f16; }
+.crackstate {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12.5px; font-weight: 650; color: var(--text);
+}
+.crackbox.win .crackstate { color: var(--ok); }
+.crackmeta {
+  font-size: 11.5px; color: var(--muted); margin-top: 4px;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+
+/* The passphrase itself — the one thing on this screen worth reading twice. */
+.pw {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 17px; font-weight: 700; color: #b6f0cd;
+  margin-top: 6px; overflow-wrap: anywhere; letter-spacing: .3px;
+}
+
+/* Search progress. */
+.pbar {
+  height: 6px; border-radius: 999px; background: var(--surface-2);
+  overflow: hidden; margin-top: 8px; border: 1px solid var(--line);
+}
+.pbar > span {
+  display: block; height: 100%; background: var(--accent);
+  transition: width .35s ease;
+}
+
+/* Handshakes found in the capture. */
+.hslist { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; }
+.hsrow {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 8px 10px; border-radius: 9px;
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.hstype {
+  flex: none; font-size: 9.5px; font-weight: 700; letter-spacing: .5px;
+  text-transform: uppercase; color: var(--accent);
+  border: 1px solid #2f6d9e; border-radius: 5px; padding: 2px 6px;
+  background: #14212c; margin-top: 1px;
+}
+.hsmain { flex: 1; min-width: 0; }
+.hsssid { font-size: 13.5px; font-weight: 650; overflow-wrap: anywhere; }
+.hsmeta {
+  font-size: 11px; color: var(--muted); margin-top: 2px;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}

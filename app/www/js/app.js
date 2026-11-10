@@ -10,6 +10,9 @@ import { Icon, STAGE_ICONS } from './icons.js';
 import { CaptureSession } from './capture.js';
 import { analyzeChunks, findings } from './analyze.js';
 import { plan, reportText, topTarget } from './analysis.js';
+import { attackList, blockedOnTransmit } from './attacks.js';
+import { extractHandshakes, hashFile } from './crack.js';
+import { CrackBridge } from './bridge.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -265,6 +268,7 @@ function renderStagePanel() {
   if (state.stage === 'capture') { renderCapturePanel(box); return; }
   if (state.stage === 'analyze') { renderAnalyzePanel(box); return; }
   if (state.stage === 'analysis') { renderAnalysisPanel(box); return; }
+  if (state.stage === 'attack') { renderAttackPanel(box); return; }
   box.innerHTML = `<div class="empty">${Icon(STAGE_ICONS[state.stage], { size: 30 })}
     <strong>${state.stage}</strong><br>Not wired yet.</div>`;
 }
@@ -676,6 +680,307 @@ function analysisPlanHtml(p) {
         strongest play here — a rogue AP claiming it would be the only AP claiming it.</div>
       <div class="roguelist">${rogueHtml}</div>` : ''}
   `;
+}
+
+// ── attack panel ──────────────────────────────────────────────────────────────
+// Stage 4. Everything above this line listens; this is the first stage that
+// could change the air, so the panel is built around saying plainly what is and
+// is not possible right now rather than around a row of buttons that mostly do
+// nothing.
+//
+// Two of the four attacks are wired to real work today: password cracking runs
+// end to end (extract here, search on the bridge). The other three need the
+// radio to transmit, which our firmware cannot do — that is a firmware
+// question, and the panel says so instead of pretending otherwise.
+
+// Our firmware has no transmit path: it can sniff and it can sync, and that is
+// all. This is the single honest answer to "can the radio inject?", and it
+// flips to true the day a TX command exists in firmware/ — at which point the
+// three transmit attacks light up without any change to the list itself.
+const FIRMWARE_CAN_TRANSMIT = false;
+
+const BRIDGE_DEFAULT_URL = 'http://192.168.1.169:8099';
+
+let handshakeResult = null;   // crack extraction over the current capture
+let bridgeStatus = null;      // last /health reading, null until tested
+let bridgeError = null;
+let crackJob = null;          // live progress: {state, progress, speed_hs, ...}
+let crackRunning = false;
+
+function bridgeConfig() {
+  return {
+    url: localStorage.getItem('bridgeUrl') || BRIDGE_DEFAULT_URL,
+    token: localStorage.getItem('bridgeToken') || '',
+  };
+}
+
+function bridgeClient() {
+  const c = bridgeConfig();
+  return new CrackBridge({ baseUrl: c.url, token: c.token });
+}
+
+/** Everything the attack list needs to judge readiness. */
+function attackContext() {
+  return {
+    hasCapture: !!capture.writer?.chunks?.length,
+    hasHandshake: !!handshakeResult?.handshakes?.length,
+    canTransmit: FIRMWARE_CAN_TRANSMIT,
+    bridgeReachable: !!bridgeStatus?.ok,
+  };
+}
+
+function renderAttackPanel(box) {
+  const ctx = attackContext();
+  const list = attackList(ctx);
+  const heldBack = blockedOnTransmit(ctx);
+  const cfg = bridgeConfig();
+
+  // Every air-derived value below — SSIDs, BSSIDs, the passphrase, error text
+  // from the bridge — goes through escapeHtml. Everything else is static markup
+  // or a number.
+  const listHtml = list.map((a) => {
+    const state = a.ready ? 'ready' : 'blocked';
+    const blockers = a.blockers.map((b) => `
+      <li><span class="bneed">${escapeHtml(b.need)}</span>${escapeHtml(b.text)}</li>`).join('');
+    return `
+    <div class="atk ${state}">
+      <div class="atkhead">
+        <span class="atkicon">${Icon(a.icon, { size: 18 })}</span>
+        <div class="atkmain">
+          <div class="atkname">${escapeHtml(a.name)}</div>
+          <div class="atkmeta">${escapeHtml(a.kind)} · ${escapeHtml(a.built)}</div>
+        </div>
+        <div class="atkstate ${state}">${state === 'ready' ? 'ready' : 'blocked'}</div>
+      </div>
+      <div class="atktag">${escapeHtml(a.tagline)}</div>
+      ${blockers ? `<ul class="blockers">${blockers}</ul>` : ''}
+      ${a.id === 'crack' ? crackActionHtml(a) : ''}
+    </div>`;
+  }).join('');
+
+  box.innerHTML = `
+    <div class="stagehead">
+      ${Icon('attack', { size: 22 })}
+      <div>
+        <div class="stagename">Attack</div>
+        <div class="stagesub">Automated attacks against what the capture found. Every entry says
+          what it needs; nothing here reports having run when it did not.</div>
+      </div>
+    </div>
+
+    <div class="secsum">
+      <div class="sechead">${Icon('link', { size: 16 })} Crack bridge</div>
+      <div class="pnlnote">The search runs on the GPU box, not on this phone — this phone extracts
+        the handshake, the bridge searches the wordlist.</div>
+      <div class="fields">
+        <label class="field">
+          <span>Bridge URL</span>
+          <input id="brUrl" type="url" inputmode="url" autocapitalize="off" spellcheck="false"
+                 value="${escapeHtml(cfg.url)}">
+        </label>
+        <label class="field">
+          <span>Token</span>
+          <input id="brToken" type="password" autocapitalize="off" spellcheck="false"
+                 value="${escapeHtml(cfg.token)}" placeholder="from ~/projects/crackbridge/token">
+        </label>
+      </div>
+      <div class="row">
+        <button id="brTest" class="ghost">${Icon('link', { size: 18 })}Test connection</button>
+      </div>
+      <div id="brState">${bridgeStateHtml()}</div>
+    </div>
+
+    <div class="sechead">${Icon('list', { size: 16 })} Attacks (${list.length})</div>
+    <div class="atklist">${listHtml}</div>
+
+    ${heldBack.length ? `<div class="pnlnote">${heldBack.length} of these need the radio to
+      transmit. That is one piece of work — a TX path in the firmware — not
+      ${heldBack.length} separate problems.</div>` : ''}
+  `;
+
+  $('#brUrl')?.addEventListener('change', (e) => {
+    localStorage.setItem('bridgeUrl', e.target.value.trim());
+    bridgeStatus = null; bridgeError = null;
+    renderStagePanel();
+  });
+  $('#brToken')?.addEventListener('change', (e) => {
+    localStorage.setItem('bridgeToken', e.target.value.trim());
+    bridgeStatus = null; bridgeError = null;
+    renderStagePanel();
+  });
+  $('#brTest')?.addEventListener('click', onBridgeTest);
+  $('#crackExtract')?.addEventListener('click', onExtractHandshakes);
+  $('#crackRun')?.addEventListener('click', onCrackRun);
+}
+
+function bridgeStateHtml() {
+  if (bridgeError) {
+    return `<div class="finding high"><div class="ftitle">${Icon('alert', { size: 15 })}Bridge unreachable</div>
+      <div class="fdetail">${escapeHtml(bridgeError)}</div></div>`;
+  }
+  if (!bridgeStatus?.ok) {
+    return `<div class="pnlnote">Not tested yet.</div>`;
+  }
+  const wl = (bridgeStatus.wordlists || []).join(', ') || 'none';
+  return `<div class="finding low"><div class="ftitle">${Icon('check', { size: 15 })}Bridge reachable</div>
+    <div class="fdetail">hashcat ${escapeHtml(bridgeStatus.hashcat || '?')} · mode
+      ${escapeHtml(bridgeStatus.mode || '?')} · queued ${bridgeStatus.queued ?? 0} ·
+      wordlists: ${escapeHtml(wl)}</div></div>`;
+}
+
+/** The crack attack's controls: extract, then submit what was found. */
+function crackActionHtml(a) {
+  if (!a.ready) return '';
+  const hs = handshakeResult;
+
+  if (crackRunning) {
+    const p = crackJob || {};
+    const pct = typeof p.progress === 'number' ? Math.round(p.progress * 100) : 0;
+    return `
+      <div class="crackbox">
+        <div class="crackstate">searching — ${escapeHtml(p.state || 'running')}</div>
+        <div class="pbar"><span style="width:${pct}%"></span></div>
+        <div class="crackmeta">${pct}%${p.speed_hs ? ` · ${Math.round(p.speed_hs).toLocaleString()} H/s` : ''}
+          · job ${escapeHtml(p.job_id || '')}</div>
+      </div>`;
+  }
+
+  if (crackJob && crackJob.done) {
+    const j = crackJob;
+    if (j.state === 'cracked' && j.password) {
+      return `
+        <div class="crackbox win">
+          <div class="crackstate">${Icon('key', { size: 15 })}passphrase recovered</div>
+          <div class="pw">${escapeHtml(j.password)}</div>
+          <div class="crackmeta">job ${escapeHtml(j.jobId || '')} · ${escapeHtml(j.wordlist || '')}</div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="crackRun" class="ghost">${Icon('refresh', { size: 18 })}Search again</button>
+        </div>`;
+    }
+    const why = j.state === 'exhausted'
+      ? 'The wordlist ran out without a match. The handshake is good — this passphrase is just not in that list.'
+      : j.state === 'timeout'
+        ? 'Gave up waiting on the bridge.'
+        : `The bridge reported: ${j.error || j.state}`;
+    return `
+      <div class="crackbox">
+        <div class="crackstate">${escapeHtml(j.state)}</div>
+        <div class="crackmeta">${escapeHtml(why)}</div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="crackRun" class="ghost">${Icon('refresh', { size: 18 })}Search again</button>
+      </div>`;
+  }
+
+  if (!hs) {
+    return `
+      <div class="row" style="margin-top:8px">
+        <button id="crackExtract" class="primary">${Icon('key', { size: 18 })}Extract handshakes</button>
+      </div>`;
+  }
+
+  if (!hs.handshakes.length) {
+    const why = hs.incomplete.length
+      ? hs.incomplete.map((i) => `<li>${escapeHtml(i.bssid)} · ${escapeHtml(i.reason)} — ${escapeHtml(i.detail)}</li>`).join('')
+      : '<li>No WPA key exchange and no PMKID in this capture.</li>';
+    return `
+      <div class="crackbox">
+        <div class="crackstate">nothing crackable here</div>
+        <div class="crackmeta">${hs.counts.eapolFrames} EAPOL frame(s), M1 ${hs.counts.m1} ·
+          M2 ${hs.counts.m2} · M3 ${hs.counts.m3} · M4 ${hs.counts.m4}</div>
+        <ul class="blockers">${why}</ul>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="crackExtract" class="ghost">${Icon('refresh', { size: 18 })}Re-read capture</button>
+      </div>`;
+  }
+
+  const rows = hs.handshakes.map((h) => `
+    <div class="hsrow">
+      <div class="hstype">${escapeHtml(h.type)}</div>
+      <div class="hsmain">
+        <div class="hsssid">${escapeHtml(h.essid || '(no name)')}</div>
+        <div class="hsmeta">${escapeHtml(h.bssid)} ← ${escapeHtml(h.client)} ·
+          ${h.messages.map(escapeHtml).join('+')}</div>
+      </div>
+    </div>`).join('');
+
+  return `
+    <div class="crackbox">
+      <div class="crackstate">${hs.handshakes.length} crackable
+        ${hs.handshakes.length === 1 ? 'handshake' : 'handshakes'}</div>
+      <div class="hslist">${rows}</div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="crackRun" class="primary">${Icon('attack', { size: 18 })}Crack on the bridge</button>
+      <button id="crackExtract" class="ghost">${Icon('refresh', { size: 18 })}Re-read</button>
+    </div>`;
+}
+
+async function onBridgeTest() {
+  bridgeError = null; bridgeStatus = null;
+  renderStagePanel();
+  try {
+    bridgeStatus = await bridgeClient().health();
+    log('ev', `bridge: hashcat ${bridgeStatus.hashcat}, ${(bridgeStatus.wordlists || []).length} wordlist(s)`);
+  } catch (e) {
+    bridgeError = e.message;
+    log('err', 'bridge: ' + e.message);
+  }
+  renderStagePanel();
+}
+
+function onExtractHandshakes() {
+  const w = capture.writer;
+  if (!w?.chunks?.length) return;
+  const t0 = Date.now();
+  try {
+    handshakeResult = extractHandshakes(w.chunks);
+  } catch (e) {
+    log('err', 'extract: ' + e.message);
+    return;
+  }
+  crackJob = null;
+  const c = handshakeResult.counts;
+  log('ev', `handshakes: ${handshakeResult.handshakes.length} crackable from ${w.chunks.length} frames ` +
+    `in ${Date.now() - t0} ms (EAPOL ${c.eapolFrames}, M1 ${c.m1}, M2 ${c.m2}, M3 ${c.m3}, M4 ${c.m4})`);
+  if (handshakeResult.incomplete.length) {
+    log('ev', `${handshakeResult.incomplete.length} key exchange(s) were incomplete`);
+  }
+  renderStagePanel();
+}
+
+async function onCrackRun() {
+  if (!handshakeResult?.handshakes?.length) return;
+  const cfg = bridgeConfig();
+  if (!cfg.url) { log('err', 'crack: no bridge URL set'); return; }
+
+  crackRunning = true;
+  crackJob = { state: 'submitting', job_id: '' };
+  renderStagePanel();
+
+  try {
+    const out = await bridgeClient().crack({
+      hashes: hashFile(handshakeResult.handshakes),
+      wordlist: 'rockyou.txt',
+      onProgress: (s) => {
+        crackJob = { ...s, job_id: crackJob?.job_id || s.job_id || '' };
+        renderStagePanel();
+      },
+    });
+    crackJob = { ...out, job: undefined, done: true, wordlist: 'rockyou.txt' };
+    if (out.state === 'cracked') {
+      log('ev', `CRACKED ${out.jobId}: passphrase recovered`);
+    } else {
+      log('ev', `crack ${out.state} (job ${out.jobId})`);
+    }
+  } catch (e) {
+    crackJob = { state: 'failed', done: true, error: e.message };
+    log('err', 'crack: ' + e.message);
+  }
+  crackRunning = false;
+  renderStagePanel();
 }
 
 // ── boot ──────────────────────────────────────────────────────────────────────
