@@ -97,3 +97,53 @@ The PSRAM is the capture buffer the design depends on; it is enabled here
 
 Sniffer capture into PSRAM, on-device reduction, artifact sync to the phone, the attack
 stage's actual contents, BadUSB over native USB-OTG, the phone app itself.
+
+## Transmit (0.3.0-tx)
+
+The firmware can now put frames on the air. It does so through one command:
+
+    TX_FRAME { hex, channel, count, interval_ms }
+
+`hex` is a complete 802.11 frame, built by the app. The firmware does not build
+frames and does not interpret them — it validates the length, checks the channel
+is 2.4 GHz, and transmits. Everything that decides *what* to send lives on the
+phone, where it is a pure function with a test suite and no radio attached.
+
+The burst is paced, one frame per pass of the main loop, so the protocol port
+keeps answering for the whole burst. A burst that blocked the loop would make
+the app look crashed mid-attack.
+
+**The limits live here, not in the app.** They are the safety design: a burst is
+a real radio action, so the numbers that bound it belong on the side that cannot
+be wrong. The app asks; the firmware clamps and reports what it actually did,
+and the app displays that.
+
+| limit | value |
+|---|---|
+| frame length | 24 – 1500 bytes |
+| frames per burst | 1 – 2000 |
+| interval | 10 – 10000 ms |
+| total burst | 30 s hard stop |
+| channel | 1 – 14 (2.4 GHz only) |
+
+Companion commands: `TX_STOP` (end a burst early), `TX_STATUS` (counters).
+`STATUS` now also reports `tx_ever` and `tx_lifetime`, so the app can tell "the
+transmitter works" from "the transmitter exists".
+
+The radio is single-purpose: `CAPTURE_START` refuses while a burst is running,
+and `TX_FRAME` refuses while a capture is running.
+
+### How this was verified
+
+Not by reading the return code. `esp_wifi_80211_tx` returning `ESP_OK` means the
+driver took the frame, which is not the same as the frame going out.
+
+The test: inject a beacon carrying a made-up SSID and this board's own MAC, then
+read it back with a *separate* receiver — the PC's WiFi adapter. It decoded
+`RC-TX-TEST` with BSSID `98:C3:77:B3:E9:AC` and a real signal level. Repeating
+it on channel 11 and seeing the receiver report channel 11 confirmed the channel
+is actually applied (an earlier run reported channel 7 for a channel-6 burst,
+which was a receiver-side artifact, not a firmware one).
+
+Until a second radio confirms a transmission, "sent 600, failed 0" is only a
+claim about the driver.

@@ -10,18 +10,24 @@
 //
 //   capture    frames already synced down to the phone
 //   handshake  a capture that actually contains EAPOL or PMKID material
-//   transmit   the board must put frames on the air — our firmware cannot
+//   transmit   the board must put frames on the air — our firmware can
 //   bridge     a reachable GPU box to do the searching
+//   firmware   THIS attack needs code that does not exist — see below
 //
-// `transmit` is the one that gates three of the four attacks, and it is a
-// firmware question, not an app question. Saying so plainly is the point of
-// this file: the list is a statement of what is built and what is not.
+// `transmit` and `firmware` are different questions and conflating them is a
+// mistake worth naming. `transmit` asks "can the radio inject at all?", which
+// is now yes — our firmware has TX_FRAME. `firmware` asks "is there code for
+// THIS attack?", which is still no for Karma and Mana. Without the second
+// question, giving the radio a transmitter would have silently promoted two
+// attacks that have nothing behind them from "blocked" to "ready" — the exact
+// failure this file exists to prevent.
 
 export const NEED = {
   CAPTURE: 'capture',
   HANDSHAKE: 'handshake',
   TRANSMIT: 'transmit',
   BRIDGE: 'bridge',
+  FIRMWARE: 'firmware',
 };
 
 // Why each requirement is unmet, in words that name the actual missing piece.
@@ -30,18 +36,25 @@ const BLOCK_TEXT = {
   [NEED.HANDSHAKE]: 'This capture holds no handshake. Nothing here has a WPA key exchange or PMKID in it to attack.',
   [NEED.TRANSMIT]: 'The board\'s firmware has no transmit path — it can only listen. This needs a deauth/beacon injector on the radio.',
   [NEED.BRIDGE]: 'No GPU box reachable. Cracking runs on the bridge, not on this phone.',
+  [NEED.FIRMWARE]: 'No firmware implements this attack. It is not a wiring job — the radio can transmit, but nothing tells it what to send for this. This is code that has not been written yet.',
 };
 
-// The command names NRSuite actually dispatches, read out of src/main.cpp on
-// 10 Nov 2026. Kept here so the `firmware` field below can be checked against
-// reality instead of against memory — an invented command name reads as a plan
-// and is worse than an honest "none exists yet".
+// Command names that actually exist in a firmware we can drive. Two sources:
+// NRSuite's dispatch table (read out of its src/main.cpp on 10 Nov 2026), and
+// OUR OWN firmware (firmware/src/main.cpp), which is the one the app talks to.
 //
-// Notably absent: there is no KARMA_* and no MANA_* command. NRSuite has a
-// hidden-AP *detector*, a captive portal, beacon spam and the deauth family,
-// but no SSID-pool lure. Its own FEATURES.md lists "Half Handshake capture" —
-// the SoftAP experiment that would be the Karma mechanism — as not implemented.
+// Kept here so the `firmware` field below can be checked against reality
+// instead of against memory — an invented command name reads as a plan and is
+// worse than an honest "none exists yet". That lesson cost a fabricated
+// KARMA_START/MANA_START pair once; the check is what stops it recurring.
+//
+// Notably absent: there is still no KARMA_* and no MANA_* command anywhere.
+// NRSuite has a hidden-AP *detector*, a captive portal, beacon spam and the
+// deauth family, but no SSID-pool lure. Its own FEATURES.md lists "Half
+// Handshake capture" — the SoftAP experiment that would be the Karma
+// mechanism — as not implemented.
 export const FIRMWARE_COMMANDS = new Set([
+  // NRSuite's dispatch table — for reference; we do not flash this.
   'DEAUTH', 'DEAUTH_BURST', 'DEAUTH_CAPTURE', 'DEAUTH_CHANNEL_CAPTURE',
   'DEAUTH_DETECT_START', 'DEAUTH_DETECT_STATUS', 'DEAUTH_DETECT_STOP',
   'DEAUTH_MULTI', 'DEAUTH_STOP',
@@ -49,6 +62,11 @@ export const FIRMWARE_COMMANDS = new Set([
   'START_HIDDEN_AP', 'STOP_HIDDEN_AP', 'HIDDEN_AP_FORCE_RECONNECT',
   'START_CLIENT_DETECT', 'STOP_CLIENT_DETECT', 'SCAN_WIFI', 'SET_CHANNEL',
   'STOP_ALL', 'REBOOT',
+  // OUR firmware (0.3.0-tx) — the raw transmitter, plus the capture commands
+  // it already had. TX_FRAME is the primitive the handshake attack drives.
+  'TX_FRAME', 'TX_STOP', 'TX_STATUS',
+  'CAPTURE_START', 'CAPTURE_STOP', 'CAPTURE_GET', 'CAPTURE_STATS',
+  'PING', 'STATUS',
 ]);
 
 /**
@@ -84,16 +102,20 @@ export const ATTACKS = [
     name: 'Force a handshake',
     icon: 'capture',
     kind: 'transmit',
-    built: 'partial',
+    built: 'ready',
     tagline: 'Knock a client off a network so it reconnects, and catch the key exchange as it does.',
     detail:
       'Sends a deauth burst at a target, then immediately starts listening for the EAPOL exchange ' +
       'the client produces when it rejoins. This is what turns "an AP with no handshake in range" ' +
-      'into something crackable. The frame builder is written and verified byte-for-byte against ' +
-      'tshark; the radio cannot transmit it yet.',
+      'into something crackable. The frame builder is verified byte-for-byte against tshark, and ' +
+      'the firmware now transmits it.',
     needs: [NEED.CAPTURE, NEED.TRANSMIT],
-    firmware: 'DEAUTH_CAPTURE',
-    firmwareNote: 'NRSuite ships this one — it fires the burst then sniffs EAPOL for that BSSID.',
+    firmware: 'TX_FRAME',
+    firmwareNote:
+      'Our firmware does the transmitting: TX_FRAME takes the frame this app built and puts it on ' +
+      'the air. The frame builder here is verified byte-for-byte against tshark, and the radio has ' +
+      'been proven to transmit — an independent receiver decoded a test frame carrying this board\'s ' +
+      'own MAC. The burst is paced by the firmware and clamped there, not here.',
     action: 'deauth-capture',
   },
   {
@@ -109,7 +131,7 @@ export const ATTACKS = [
       'associates to the only thing answering. The names worth claiming come from the Analysis ' +
       'plan. This is the class of attack that turns a phone\'s own remembered-network list ' +
       'against it.',
-    needs: [NEED.CAPTURE, NEED.TRANSMIT],
+    needs: [NEED.CAPTURE, NEED.TRANSMIT, NEED.FIRMWARE],
     firmware: null,
     firmwareNote:
       'No firmware we have implements this. NRSuite has a hidden-AP detector and a captive portal, ' +
@@ -130,7 +152,7 @@ export const ATTACKS = [
       'list of network names continuously, so a device that recognises one connects on its own. ' +
       'It answers probes as well, so it covers both kinds of client. The handshake or the portal ' +
       'password is the payoff.',
-    needs: [NEED.CAPTURE, NEED.TRANSMIT],
+    needs: [NEED.CAPTURE, NEED.TRANSMIT, NEED.FIRMWARE],
     firmware: null,
     firmwareNote:
       'No firmware we have implements this either. Beacon spam and a captive portal exist ' +
@@ -155,6 +177,9 @@ export function evaluate(attack, ctx) {
     else if (need === NEED.HANDSHAKE) met = !!ctx.hasHandshake;
     else if (need === NEED.TRANSMIT) met = !!ctx.canTransmit;
     else if (need === NEED.BRIDGE) met = !!ctx.bridgeReachable;
+    // The per-attack question: does this attack have a command behind it? Read
+    // off the attack itself, not the context — it is a property of the attack.
+    else if (need === NEED.FIRMWARE) met = !!attack.firmware;
     else met = false;
     if (!met) blockers.push({ need, text: BLOCK_TEXT[need] });
   }
@@ -178,5 +203,10 @@ export function runnable(ctx) {
  * worth showing as one group, because it is one piece of work.
  */
 export function blockedOnTransmit(ctx) {
-  return attackList(ctx).filter((a) => !a.ready && a.needs.includes(NEED.TRANSMIT));
+  // Blocked *by the transmit gap specifically* — not merely attacks that happen
+  // to list transmit among their needs. Karma and Mana list it, but the thing
+  // actually holding them back is that no code exists for them, and those are
+  // different groups of work. Reporting them together would overstate how close
+  // they are.
+  return attackList(ctx).filter((a) => a.blockers.some((b) => b.need === NEED.TRANSMIT));
 }

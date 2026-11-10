@@ -35,6 +35,7 @@
 #include "protocol.h"
 #include "serial_transport.h"
 #include "capture.h"
+#include "tx.h"
 
 // Debug output. This MUST NOT share a port with the protocol — anything printed
 // on a port carrying frames corrupts the stream. Serial0 is the bridged UART,
@@ -50,7 +51,7 @@
   #define DBG(...) do { } while (0)
 #endif
 
-#define FW_VERSION   "0.2.0-capture"
+#define FW_VERSION   "0.3.0-tx"
 #define DEVICE_NAME  "SRC"          // advertised BLE name — deliberately generic
 
 // GATT. UUID base echoes the frame magic 0xADDE.
@@ -163,6 +164,11 @@ static void cmd_status(uint8_t id) {
     d["psram_total"] = (uint32_t)psram_total();
     d["psram_free"] = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     d["uptime_ms"] = millis();
+    // Whether this device has ever put anything on the air, and how much. The
+    // app reads this to tell "the transmitter works" from "the transmitter
+    // exists" — the two are easy to confuse from the phone side.
+    d["tx_ever"] = g_tx_ever;
+    d["tx_lifetime"] = g_tx_lifetime;
     // The device holds nothing. Say so, so the app can prove it.
     d["persisted"] = false;
     reply_json(id, true, d);
@@ -273,6 +279,8 @@ static void cmd_capture_start(uint8_t id, JsonDocument& args) {
     if (cap_running()) { send_error(id, "capture already running"); return; }
     // A scan in flight owns the radio. Refuse rather than fight it.
     if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
+    // A burst in flight owns the radio too — see cmd_tx_frame.
+    if (tx_running()) { send_error(id, "burst in flight — stop it first"); return; }
 
     int      ch   = args["channel"]     | (int)CAP_DEFAULT_CH;
     uint32_t dur  = args["duration_ms"] | (uint32_t)CAP_DEFAULT_MS;
@@ -350,6 +358,65 @@ static void cmd_capture_get(uint8_t id, JsonDocument& args) {
     reply_json(id, true, d);
 }
 
+// ── Attack ──────────────────────────────────────────────────────────────────
+// The first thing in this firmware that can change the air. It is a dumb
+// transmitter on purpose — see the header of tx.h for why the frame builder
+// lives on the phone instead of here.
+//
+// The radio is single-purpose, so this refuses to start while a capture is
+// running and a capture refuses to start while this is running. They are the
+// same radio; pretending otherwise would produce a burst into a promiscuous
+// receiver, which is neither of the two things the operator asked for.
+static void cmd_tx_frame(uint8_t id, JsonDocument& args) {
+    if (cap_running()) { send_error(id, "capture is running — the radio is listening"); return; }
+    if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
+
+    const char* hex = args["hex"];
+    if (!hex) { send_error(id, "missing args.hex"); return; }
+
+    int ch  = args["channel"]     | (int)1;
+    int cnt = args["count"]       | (int)1;
+    int ivl = args["interval_ms"] | (int)100;
+
+    const char* why = nullptr;
+    if (!tx_start(hex, ch, cnt, ivl, id, &why)) { send_error(id, why); return; }
+
+    if (g_reply_ch != nullptr) ble_pause();   // TX + BLE is rated stable, but keep the link quiet
+    g_stage = STAGE_ATTACK;
+
+    // Report the CLAMPED values, not the requested ones. The app displays what
+    // this returns, so this is where "the firmware bounded it" becomes visible
+    // to the operator instead of being an assumption.
+    JsonDocument d;
+    d["started"]     = true;
+    d["requested"]   = cnt;
+    d["count"]       = g_tx_want;
+    d["channel"]     = g_tx_ch;
+    d["interval_ms"] = g_tx_interval;
+    d["frame_len"]   = (uint32_t)g_tx_len;
+    reply_json(id, true, d);
+    emit_event("stage", stage_name(g_stage));
+}
+
+static void cmd_tx_stop(uint8_t id) {
+    bool was = tx_running();
+    tx_stop();
+    if (was && g_reply_ch != nullptr) ble_resume();
+    g_stage = STAGE_IDLE;
+
+    JsonDocument d;
+    tx_stats(d);
+    d["stopped"] = was;
+    reply_json(id, true, d);
+    emit_event("stage", stage_name(g_stage));
+}
+
+static void cmd_tx_status(uint8_t id) {
+    JsonDocument d;
+    tx_stats(d);
+    reply_json(id, true, d);
+}
+
 // ── Dispatch ────────────────────────────────────────────────────────────────
 // Case-insensitive on purpose. NRSuite's firmware answers to uppercase ("PING",
 // "SCAN") and the phone app is written against that convention. Ours must accept
@@ -378,6 +445,9 @@ static void dispatch(const uint8_t* payload, size_t len, uint8_t id) {
     else if (cmd_is(cmd, "capture_stop"))  cmd_capture_stop(id);
     else if (cmd_is(cmd, "capture_get"))   cmd_capture_get(id, args);
     else if (cmd_is(cmd, "capture_stats")) cmd_capture_stats(id);
+    else if (cmd_is(cmd, "tx_frame"))      cmd_tx_frame(id, args);
+    else if (cmd_is(cmd, "tx_stop"))       cmd_tx_stop(id);
+    else if (cmd_is(cmd, "tx_status"))     cmd_tx_status(id);
     else send_error(id, "unknown cmd");
 }
 
@@ -527,6 +597,18 @@ void loop() {
     ch_usb.poll();
     ch_uart.poll();
     scan_poll();
+
+    // Step the transmit burst. One frame per pass, never a blocking loop, so the
+    // protocol port keeps answering for the whole burst — the app must not go
+    // silent in the middle of an attack.
+    if (tx_poll()) {
+        if (g_reply_ch != nullptr) ble_resume();
+        g_stage = STAGE_IDLE;
+        JsonDocument d;
+        tx_stats(d);
+        emit_event_json("tx_done", d);
+        emit_event("stage", stage_name(g_stage));
+    }
 
     // Auto-stop on the capture's own duration. cap_poll() returns true on the
     // single pass where it times out, so the completion event is emitted once

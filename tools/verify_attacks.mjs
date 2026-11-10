@@ -171,10 +171,16 @@ ok(wrong === 0, 'readiness and blockers match the declared needs everywhere',
 const empty = { hasCapture: false, hasHandshake: false, canTransmit: false, bridgeReachable: false };
 ok(runnable(empty).length === 0, 'with nothing available, nothing is runnable');
 
-// The ceiling case: everything available means everything runs.
+// The ceiling case. Note what "everything available" now means: every context
+// flag is true, and it is STILL not all four. Karma and Mana need code that has
+// not been written, and no amount of available context can supply that — which
+// is precisely the distinction the separate `firmware` need exists to draw.
 const full = { hasCapture: true, hasHandshake: true, canTransmit: true, bridgeReachable: true };
-ok(runnable(full).length === ATTACKS.length,
-   `with everything available, all ${ATTACKS.length} run`);
+ok(runnable(full).length === ATTACKS.length - 2,
+   `with everything available, ${ATTACKS.length - 2} run — the other two need code, not context`,
+   runnable(full).map((a) => a.id).join(', '));
+ok(ATTACKS.filter((a) => a.kind === 'transmit' && !a.firmware).every((a) => !evaluate(a, full).ready),
+   'an attack with no command behind it is never ready, whatever the context');
 
 // And the real-world case this stage ships in: our firmware cannot transmit.
 const shipped = { hasCapture: true, hasHandshake: true, canTransmit: false, bridgeReachable: true };
@@ -184,6 +190,68 @@ ok(runnableNow.length === 1 && runnableNow[0].id === 'crack',
    runnableNow.map((a) => a.id).join(', '));
 ok(blockedOnTransmit(shipped).length === ATTACKS.length - 1,
    'the other attacks are grouped as blocked on transmit');
+
+// The state this stage ships in NOW: our firmware gained a TX path (0.3.0-tx),
+// so the forced handshake is runnable too. If this flips back, either the
+// firmware regressed or FIRMWARE_CAN_TRANSMIT was set carelessly — both worth
+// a red check.
+const withTx = { hasCapture: true, hasHandshake: true, canTransmit: true, bridgeReachable: true };
+const runnableTx = runnable(withTx).map((a) => a.id).sort();
+ok(runnableTx.join(',') === 'crack,handshake',
+   'with a transmit path, the forced handshake joins crack as runnable',
+   runnableTx.join(', '));
+// The point of the separate `firmware` need: a transmitter on the radio must
+// NOT promote attacks that have no code behind them.
+ok(blockedOnTransmit(withTx).length === 0,
+   'nothing is blocked on transmit once the radio can inject');
+const stillBlocked = attackList(withTx).filter((a) => !a.ready).map((a) => a.id).sort();
+ok(stillBlocked.join(',') === 'karma,mana',
+   'karma and mana stay blocked — on their own missing code, not on the radio',
+   stillBlocked.join(', '));
+const karmaBlocker = attackList(withTx).find((a) => a.id === 'karma').blockers.map((b) => b.need);
+ok(karmaBlocker.includes('firmware'),
+   'karma names the real missing piece: firmware, not transmit',
+   karmaBlocker.join(', '));
+
+// ── 2b. the app's command names match the firmware that is actually flashed ──
+//
+// This is the check that would have caught KARMA_START. It reads the firmware
+// source rather than trusting the set above, so the two cannot drift apart
+// silently: if the app names a command, that command has to exist in main.cpp's
+// dispatch, in this repository, today.
+section('2b. app command names vs the firmware source');
+
+try {
+  const fw = readFileSync(join(ROOT, 'firmware', 'src', 'main.cpp'), 'utf8');
+
+  // Pull every string literal compared in the dispatch chain.
+  const dispatched = new Set(
+    [...fw.matchAll(/cmd_is\(cmd,\s*"([a-z0-9_]+)"\)/g)].map((m) => m[1].toUpperCase()),
+  );
+  ok(dispatched.size > 5, `found the dispatch table in main.cpp (${dispatched.size} commands)`);
+
+  // Our firmware's own commands — the ones the app must not invent.
+  for (const c of ['TX_FRAME', 'TX_STOP', 'TX_STATUS', 'CAPTURE_START', 'CAPTURE_GET', 'PING', 'STATUS']) {
+    ok(dispatched.has(c), `${c} is really dispatched by the firmware`);
+  }
+
+  // And the reverse: anything the library claims is one of ours must exist.
+  const ours = ATTACKS.map((a) => a.firmware).filter(Boolean);
+  const missing = ours.filter((c) => !dispatched.has(c.toUpperCase()));
+  ok(missing.length === 0,
+     'every firmware command the attack library names exists in main.cpp',
+     missing.join(', '));
+
+  // The clamps are the safety design — they must live in the firmware.
+  const txh = readFileSync(join(ROOT, 'firmware', 'src', 'tx.h'), 'utf8');
+  for (const c of ['TX_MAX_COUNT', 'TX_MIN_INTERVAL_MS', 'TX_MAX_INTERVAL_MS', 'TX_MAX_TOTAL_MS', 'TX_MAX_FRAME']) {
+    ok(txh.includes(c), `the firmware clamps with ${c}`);
+  }
+  ok(/esp_wifi_80211_tx\s*\(/.test(txh),
+     'the transmitter is esp_wifi_80211_tx — the real radio call, not a stub');
+} catch (e) {
+  ok(false, 'could read the firmware source', e.message);
+}
 
 // ── 3. extraction, through the path the app calls ────────────────────────────
 
