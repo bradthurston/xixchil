@@ -20,6 +20,8 @@ const PATHS = {
   alert:    '<path d="M12 3 2.5 20h19z"/><path d="M12 10v4"/><path d="M12 17.2v.1"/>',
   check:    '<path d="m4 12.5 5 5L20 6.5"/>',
   chevron:  '<path d="m9 6 6 6-6 6"/>',
+  stop:     '<rect x="6" y="6" width="12" height="12" rx="2.5"/>',
+  save:     '<path d="M12 3v12"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M5 20h14"/>',
 };
 
 export function Icon(name, { size = 22, strokeWidth = 1.75, className = '' } = {}) {

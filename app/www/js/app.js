@@ -7,6 +7,7 @@
 import { encodeFrame, encodeCmd, FrameDecoder, payloadJson, TYPE, typeName } from './protocol.js';
 import { UsbTransport } from './transport.js';
 import { Icon, STAGE_ICONS } from './icons.js';
+import { CaptureSession } from './capture.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -37,6 +38,10 @@ const state = {
   stage: 'capture',
 };
 
+// The Capture stage's session. Declared before the decoder because the decoder
+// feeds it PCAP frames; assigned once request() exists, further down.
+let capture = null;
+
 const transport = new UsbTransport({
   onData: (bytes) => decoder.push(bytes),
   onStatus: (kind, detail) => {
@@ -50,12 +55,15 @@ const transport = new UsbTransport({
 
 const decoder = new FrameDecoder({
   onFrame: (f) => {
-    const json = f.type === TYPE.RESP || f.type === TYPE.EVENT ? payloadJson(f.payload) : null;
+    // PCAP frames are the payload of a sync, not something to narrate. One line
+    // per frame would bury the protocol traffic under hundreds of lines.
     if (f.type === TYPE.PCAP) {
-      log('rx', `PCAP chunk id=${f.id} ${f.payload.length} bytes`);
-    } else {
-      log('rx', `${typeName(f.type)} id=${f.id} ${json ? JSON.stringify(json) : f.payload.length + 'B'}`);
+      capture?.onPcapChunk(f.payload);
+      return;
     }
+    const json = f.type === TYPE.RESP || f.type === TYPE.EVENT ? payloadJson(f.payload) : null;
+    log('rx', `${typeName(f.type)} id=${f.id} ${json ? JSON.stringify(json) : f.payload.length + 'B'}`);
+    if (f.type === TYPE.EVENT && json) onEvent(json);
     if (f.type === TYPE.RESP && state.pending.has(f.id)) {
       const p = state.pending.get(f.id);
       clearTimeout(p.timer);
@@ -84,6 +92,13 @@ function request(cmd, args, { timeoutMs = 4000 } = {}) {
     });
   });
 }
+
+// ── capture session ───────────────────────────────────────────────────────────
+capture = new CaptureSession({
+  request,
+  log,
+  onProgress: () => { if (state.stage === 'capture') renderCaptureStats(); },
+});
 
 // ── ui ────────────────────────────────────────────────────────────────────────
 function setConnected(on) {
@@ -193,11 +208,192 @@ function renderStages() {
   });
 }
 
+// ── events from the device ────────────────────────────────────────────────────
+function onEvent(json) {
+  if (json.event === 'capture_done') {
+    capture.onCaptureDone(json);
+    stopCapTicker();
+    log('ev', `capture finished on its own: ${json.frames ?? '?'} frames, ${json.dropped ?? '?'} dropped`);
+    if (state.stage === 'capture') renderStagePanel();
+    return;
+  }
+  // 'stage' and 'hb' describe the DEVICE's radio state. state.stage is the
+  // OPERATOR's position in the flow. Related, but not the same thing — so one
+  // never moves the other. A board that says "idle" is not the operator
+  // deciding to leave the Capture step.
+}
+
+// ── capture panel ─────────────────────────────────────────────────────────────
+const CHANNELS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+const DURATIONS = [
+  { v: 5000,  label: '5 s' },
+  { v: 10000, label: '10 s' },
+  { v: 30000, label: '30 s' },
+  { v: 60000, label: '60 s' },
+];
+
+let capTicker = null;
+function stopCapTicker() {
+  if (capTicker) { clearInterval(capTicker); capTicker = null; }
+}
+// Poll the board while it sniffs. The capture runs for seconds with nothing
+// else to look at, and a live frame count is the difference between "working"
+// and "hung" — the link is proven, so it is a cheap question to keep asking.
+function startCapTicker() {
+  stopCapTicker();
+  capTicker = setInterval(async () => {
+    if (!capture.running) { stopCapTicker(); return; }
+    try {
+      const s = await request('CAPTURE_STATS', undefined, { timeoutMs: 3000 });
+      if (s && s.ok) { capture.stats = s; renderCaptureStats(); }
+    } catch { /* link busy this tick — the next one will try again */ }
+  }, 1000);
+}
+
+function fmtBytes(n) {
+  if (n == null) return '—';
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(2) + ' MB';
+}
+
 function renderStagePanel() {
   const box = $('#stagePanel');
   if (!box) return;
-  box.innerHTML = `<div class="empty">${Icon(STAGE_ICONS[state.stage], { size: 30 })}
-    <strong>${state.stage}</strong><br>Not wired yet — the link comes first.</div>`;
+  if (state.stage !== 'capture') {
+    box.innerHTML = `<div class="empty">${Icon(STAGE_ICONS[state.stage], { size: 30 })}
+      <strong>${state.stage}</strong><br>Not wired yet.</div>`;
+    return;
+  }
+  renderCapturePanel(box);
+}
+
+function renderCapturePanel(box) {
+  const running = capture.running;
+  box.innerHTML = `
+    <div class="stagehead">
+      ${Icon('capture', { size: 22 })}
+      <div>
+        <div class="stagename">Capture</div>
+        <div class="stagesub">802.11 frames into the board's PSRAM, then synced down to a pcap on this phone.</div>
+      </div>
+    </div>
+
+    <div class="fields">
+      <label class="field">
+        <span>Channel</span>
+        <select id="capChannel" ${running ? 'disabled' : ''}>
+          ${CHANNELS.map((c) => `<option value="${c}"${c === capture.channel ? ' selected' : ''}>${c}</option>`).join('')}
+        </select>
+      </label>
+      <label class="field">
+        <span>Duration</span>
+        <select id="capDuration" ${running ? 'disabled' : ''}>
+          ${DURATIONS.map((d) => `<option value="${d.v}"${d.v === capture.durationMs ? ' selected' : ''}>${d.label}</option>`).join('')}
+        </select>
+      </label>
+    </div>
+
+    <div class="row">
+      <button id="capStart" class="primary ${running ? 'hidden' : ''}">${Icon('capture', { size: 18 })}Start capture</button>
+      <button id="capStop" class="danger ${running ? '' : 'hidden'}">${Icon('stop', { size: 18 })}Stop</button>
+    </div>
+
+    <div id="capStats"></div>
+
+    <div class="row" style="margin-top:10px">
+      <button id="capSync" class="ghost" ${running || !capture.stats ? 'disabled' : ''}>${Icon('refresh', { size: 18 })}Sync to phone</button>
+      <button id="capSave" class="ghost" ${capture.hasData ? '' : 'disabled'}>${Icon('save', { size: 18 })}Save pcap</button>
+    </div>
+
+    ${capture.saved ? `<div class="saved">${Icon('check', { size: 16 })}
+      <span>${escapeHtml(capture.saved.path)} · ${fmtBytes(capture.saved.bytes)}</span></div>` : ''}
+  `;
+
+  $('#capChannel')?.addEventListener('change', (e) => { capture.channel = Number(e.target.value); });
+  $('#capDuration')?.addEventListener('change', (e) => { capture.durationMs = Number(e.target.value); });
+  $('#capStart')?.addEventListener('click', onCaptureStart);
+  $('#capStop')?.addEventListener('click', onCaptureStop);
+  $('#capSync')?.addEventListener('click', onCaptureSync);
+  $('#capSave')?.addEventListener('click', onCaptureSave);
+
+  renderCaptureStats();
+}
+
+function renderCaptureStats() {
+  const el = $('#capStats');
+  if (!el) return;
+  const s = capture.summary();
+  const dev = capture.stats;
+  const rows = [];
+
+  if (dev) {
+    rows.push(['board frames', dev.frames ?? '—']);
+    rows.push(['board dropped', dev.dropped ?? '—']);
+    rows.push(['board bytes', fmtBytes(dev.bytes)]);
+  }
+  if (s.packets) {
+    rows.push(['file packets', s.packets]);
+    rows.push(['file size', fmtBytes(s.bytes)]);
+    if (s.spanMs != null) rows.push(['timeline', s.spanMs.toFixed(0) + ' ms']);
+    // Say which timestamps you actually got. A pcap whose records all carry the
+    // phone's arrival time is not wrong, but it cannot be trusted to order
+    // events — and that difference is invisible in the file.
+    rows.push(['timestamps', s.untimed === 0
+      ? `TSFT (${s.timed})`
+      : `${s.timed} TSFT / ${s.untimed} arrival`]);
+  }
+
+  el.innerHTML = rows.length
+    // Every value here is either a number formatted by fmtBytes or a string
+    // passed through escapeHtml — nothing reaches the DOM raw.
+    ? `<dl class="kv">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${escapeHtml(String(v))}</dd>`).join('')}</dl>`
+    : '';
+}
+
+async function onCaptureStart() {
+  try {
+    const resp = await capture.start({ channel: capture.channel, durationMs: capture.durationMs });
+    log('ev', `capture started ch${resp.channel} for ${resp.duration_ms} ms, buffer ${fmtBytes(resp.buf_bytes)}`);
+    renderStagePanel();
+    startCapTicker();
+  } catch (e) {
+    log('err', 'capture start: ' + e.message);
+  }
+}
+
+async function onCaptureStop() {
+  stopCapTicker();
+  try {
+    const resp = await capture.stop();
+    log('ev', `capture stopped: ${resp?.frames ?? '?'} frames, ${resp?.dropped ?? '?'} dropped`);
+  } catch (e) {
+    log('err', 'capture stop: ' + e.message);
+  }
+  renderStagePanel();
+}
+
+async function onCaptureSync() {
+  const btn = $('#capSync');
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+  try {
+    await capture.sync();
+    const s = capture.summary();
+    log('ev', `synced ${s.packets} packets, ${fmtBytes(s.bytes)}, span ${s.spanMs == null ? '—' : s.spanMs.toFixed(0) + ' ms'}`);
+  } catch (e) {
+    log('err', 'sync: ' + e.message);
+  }
+  renderStagePanel();
+}
+
+async function onCaptureSave() {
+  try {
+    const saved = await capture.save();
+    log('ev', `saved ${saved.path} (${fmtBytes(saved.bytes)}, ${saved.packets} packets)`);
+    renderStagePanel();
+  } catch (e) {
+    log('err', 'save: ' + e.message);
+  }
 }
 
 // ── boot ──────────────────────────────────────────────────────────────────────

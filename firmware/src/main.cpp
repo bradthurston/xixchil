@@ -20,8 +20,9 @@
 // (capture → analyze → analysis → attack) is the coexistence schedule, not just
 // a UI choice.
 //
-// This file currently implements the transport, the protocol and the stage
-// machine, plus one real end-to-end feature (Wi-Fi scan) to prove the path.
+// This file implements the transport, the protocol, the stage machine, Wi-Fi
+// scan, and the capture stage — a real PSRAM-backed 802.11 sniffer whose frames
+// the phone pulls down and writes to a pcap.
 //
 // Build: pio run -e s3-n16r8
 
@@ -33,6 +34,7 @@
 
 #include "protocol.h"
 #include "serial_transport.h"
+#include "capture.h"
 
 // Debug output. This MUST NOT share a port with the protocol — anything printed
 // on a port carrying frames corrupts the stream. Serial0 is the bridged UART,
@@ -48,7 +50,7 @@
   #define DBG(...) do { } while (0)
 #endif
 
-#define FW_VERSION   "0.1.0-skeleton"
+#define FW_VERSION   "0.2.0-capture"
 #define DEVICE_NAME  "SRC"          // advertised BLE name — deliberately generic
 
 // GATT. UUID base echoes the frame magic 0xADDE.
@@ -240,6 +242,114 @@ static void scan_poll() {
     reply_json(id, true, d);
 }
 
+// ── Capture ─────────────────────────────────────────────────────────────────
+// The thing this device exists for. capture.h explains why it buffers into
+// PSRAM instead of streaming frames live.
+//
+// Coexistence, and why BLE is stopped here: "Wi-Fi Sniffer RX + BLE" is rated
+// C1 (UNSTABLE) in every BLE mode. Over the cable there is no RF contention at
+// all, so the right move is to take the BLE radio out of the picture for the
+// duration and put it back afterwards. It is conditional on being on a serial
+// port, because when BLE *is* the link, advertising is how the phone found us.
+static void ble_pause()  { NimBLEDevice::getAdvertising()->stop(); }
+static void ble_resume() { if (!g_connected) NimBLEDevice::startAdvertising(); }
+
+static void send_frame_pcap(uint8_t chunk, const uint8_t* data, size_t len) {
+    send_frame(FT_PCAP, chunk, data, len);
+}
+
+// An event that carries a payload rather than a single string — the capture
+// completion needs its stats inline, and a second round trip just to ask "how
+// did it go" is a round trip the phone should not have to make.
+static void emit_event_json(const char* name, JsonDocument& doc) {
+    doc["event"] = name;
+    char out[512];
+    size_t n = serializeJson(doc, out, sizeof(out));
+    if (n == 0 || n >= sizeof(out)) return;
+    send_frame(FT_EVENT, 0, (const uint8_t*)out, n);
+}
+
+static void cmd_capture_start(uint8_t id, JsonDocument& args) {
+    if (cap_running()) { send_error(id, "capture already running"); return; }
+    // A scan in flight owns the radio. Refuse rather than fight it.
+    if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
+
+    int      ch   = args["channel"]     | (int)CAP_DEFAULT_CH;
+    uint32_t dur  = args["duration_ms"] | (uint32_t)CAP_DEFAULT_MS;
+    int      snap = args["snaplen"]     | (int)CAP_SNAPLEN_MAX;
+
+    // 2.4 GHz only. The S3 has no 5 GHz radio, so a channel outside 1..14 is a
+    // caller error and gets refused, not silently remapped onto something else.
+    if (ch < 1 || ch > 14) { send_error(id, "channel must be 1..14"); return; }
+    if (snap < 32 || snap > CAP_SNAPLEN_MAX) snap = CAP_SNAPLEN_MAX;
+    if (dur == 0 || dur > CAP_MAX_MS) dur = CAP_DEFAULT_MS;
+
+    // t0 anchors the pcap timeline. The app pairs it with its own wall clock on
+    // receipt and offsets every record's TSFT by the difference — that is what
+    // turns device-relative microseconds into real timestamps in the file.
+    uint64_t t0 = (uint64_t)esp_timer_get_time();
+
+    if (!cap_start((uint8_t)ch, dur, (uint16_t)snap)) {
+        send_error(id, "capture start failed");
+        return;
+    }
+
+    if (g_reply_ch != nullptr) ble_pause();
+    g_stage = STAGE_CAPTURE;
+
+    JsonDocument d;
+    d["started"]     = true;
+    d["channel"]     = ch;
+    d["duration_ms"] = dur;
+    d["snaplen"]     = snap;
+    d["buf_bytes"]   = (uint32_t)cap_buf_bytes();
+    d["t0_us"]       = t0;
+    reply_json(id, true, d);
+    emit_event("stage", stage_name(g_stage));
+}
+
+static void cmd_capture_stop(uint8_t id) {
+    bool was = cap_running();
+    cap_stop();
+    if (was && g_reply_ch != nullptr) ble_resume();
+    g_stage = STAGE_IDLE;      // the stage tracks the radio, and the radio is idle
+
+    JsonDocument d;
+    cap_stats(d);
+    d["stopped"] = true;
+    reply_json(id, true, d);
+    emit_event("stage", stage_name(g_stage));
+}
+
+static void cmd_capture_stats(uint8_t id) {
+    JsonDocument d;
+    cap_stats(d);
+    reply_json(id, true, d);
+}
+
+// Pull the buffer down to the phone. offset is a BYTE offset into the frame
+// region, not a frame index — the firmware then needs no side index array, and
+// the caller can resume exactly where it stopped.
+static void cmd_capture_get(uint8_t id, JsonDocument& args) {
+    if (cap_running()) { send_error(id, "stop the capture first"); return; }
+
+    uint32_t off32 = args["offset"] | (uint32_t)0;
+    int      maxf  = args["count"]  | (int)128;
+    if (maxf <= 0 || maxf > 512) maxf = 128;
+
+    size_t next = (size_t)off32;
+    bool   done = false;
+    size_t sent = cap_send_from((size_t)off32, (uint16_t)maxf, &next, &done,
+                                send_frame_pcap);
+
+    JsonDocument d;
+    d["sent"]        = (uint32_t)sent;
+    d["next_offset"] = (uint32_t)next;
+    d["done"]        = done;
+    d["total_bytes"] = (uint32_t)cap_used();
+    reply_json(id, true, d);
+}
+
 // ── Dispatch ────────────────────────────────────────────────────────────────
 // Case-insensitive on purpose. NRSuite's firmware answers to uppercase ("PING",
 // "SCAN") and the phone app is written against that convention. Ours must accept
@@ -264,6 +374,10 @@ static void dispatch(const uint8_t* payload, size_t len, uint8_t id) {
     else if (cmd_is(cmd, "status")) cmd_status(id);
     else if (cmd_is(cmd, "stage"))  cmd_stage(id, args);
     else if (cmd_is(cmd, "scan"))   cmd_scan(id);
+    else if (cmd_is(cmd, "capture_start")) cmd_capture_start(id, args);
+    else if (cmd_is(cmd, "capture_stop"))  cmd_capture_stop(id);
+    else if (cmd_is(cmd, "capture_get"))   cmd_capture_get(id, args);
+    else if (cmd_is(cmd, "capture_stats")) cmd_capture_stats(id);
     else send_error(id, "unknown cmd");
 }
 
@@ -413,6 +527,18 @@ void loop() {
     ch_usb.poll();
     ch_uart.poll();
     scan_poll();
+
+    // Auto-stop on the capture's own duration. cap_poll() returns true on the
+    // single pass where it times out, so the completion event is emitted once
+    // rather than on every pass thereafter.
+    if (cap_poll()) {
+        if (g_reply_ch != nullptr) ble_resume();
+        g_stage = STAGE_IDLE;
+        JsonDocument d;
+        cap_stats(d);
+        emit_event_json("capture_done", d);
+        emit_event("stage", stage_name(g_stage));
+    }
 
     static uint32_t last = 0;
     if (millis() - last > 5000) {
