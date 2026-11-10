@@ -753,6 +753,9 @@ function renderAttackPanel(box) {
         <div class="atkstate ${state}">${state === 'ready' ? 'ready' : 'blocked'}</div>
       </div>
       <div class="atktag">${escapeHtml(a.tagline)}</div>
+      ${a.firmwareNote ? `<div class="atkfw">${
+        a.firmware ? `<code>${escapeHtml(a.firmware)}</code> ` : ''
+      }${escapeHtml(a.firmwareNote)}</div>` : ''}
       ${blockers ? `<ul class="blockers">${blockers}</ul>` : ''}
       ${a.id === 'crack' ? crackActionHtml(a) : ''}
     </div>`;

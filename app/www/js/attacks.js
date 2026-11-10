@@ -32,13 +32,35 @@ const BLOCK_TEXT = {
   [NEED.BRIDGE]: 'No GPU box reachable. Cracking runs on the bridge, not on this phone.',
 };
 
+// The command names NRSuite actually dispatches, read out of src/main.cpp on
+// 10 Nov 2026. Kept here so the `firmware` field below can be checked against
+// reality instead of against memory — an invented command name reads as a plan
+// and is worse than an honest "none exists yet".
+//
+// Notably absent: there is no KARMA_* and no MANA_* command. NRSuite has a
+// hidden-AP *detector*, a captive portal, beacon spam and the deauth family,
+// but no SSID-pool lure. Its own FEATURES.md lists "Half Handshake capture" —
+// the SoftAP experiment that would be the Karma mechanism — as not implemented.
+export const FIRMWARE_COMMANDS = new Set([
+  'DEAUTH', 'DEAUTH_BURST', 'DEAUTH_CAPTURE', 'DEAUTH_CHANNEL_CAPTURE',
+  'DEAUTH_DETECT_START', 'DEAUTH_DETECT_STATUS', 'DEAUTH_DETECT_STOP',
+  'DEAUTH_MULTI', 'DEAUTH_STOP',
+  'START_SNIFF', 'START_BEACON', 'STOP_BEACON', 'START_PORTAL', 'STOP_PORTAL',
+  'START_HIDDEN_AP', 'STOP_HIDDEN_AP', 'HIDDEN_AP_FORCE_RECONNECT',
+  'START_CLIENT_DETECT', 'STOP_CLIENT_DETECT', 'SCAN_WIFI', 'SET_CHANNEL',
+  'STOP_ALL', 'REBOOT',
+]);
+
 /**
  * The library.
  *
- * `firmware` is the command this attack would drive once the radio can
- * transmit — recorded here so the requirement is concrete rather than vague.
- * `built` is honest: 'ready' means the app-side work is done, 'partial' means
- * some of it is, 'planned' means none of it is.
+ * `firmware` is the command this attack would drive, and it is either a name
+ * from FIRMWARE_COMMANDS above or null. null means the capability does not
+ * exist in any firmware we have — which is a different and more honest thing
+ * than naming a command that was never written.
+ *
+ * `built` says how much of the work is done: 'ready' (the app side is finished
+ * and proven), 'partial' (some of it), 'planned' (none).
  */
 export const ATTACKS = [
   {
@@ -54,6 +76,7 @@ export const ATTACKS = [
       'the phone extracts, the bridge searches.',
     needs: [NEED.CAPTURE, NEED.HANDSHAKE, NEED.BRIDGE],
     firmware: null,
+    firmwareNote: 'Offline work — nothing goes on the air.',
     action: 'crack',
   },
   {
@@ -66,10 +89,11 @@ export const ATTACKS = [
     detail:
       'Sends a deauth burst at a target, then immediately starts listening for the EAPOL exchange ' +
       'the client produces when it rejoins. This is what turns "an AP with no handshake in range" ' +
-      'into something crackable. The frame builder is written and verified; the radio cannot ' +
-      'transmit it yet.',
+      'into something crackable. The frame builder is written and verified byte-for-byte against ' +
+      'tshark; the radio cannot transmit it yet.',
     needs: [NEED.CAPTURE, NEED.TRANSMIT],
     firmware: 'DEAUTH_CAPTURE',
+    firmwareNote: 'NRSuite ships this one — it fires the burst then sniffs EAPOL for that BSSID.',
     action: 'deauth-capture',
   },
   {
@@ -77,16 +101,20 @@ export const ATTACKS = [
     name: 'Karma',
     icon: 'antenna',
     kind: 'transmit',
-    built: 'partial',
+    built: 'planned',
     tagline: 'Answer every device that asks for a network by name, and be the only one that answers.',
     detail:
       'A device broadcasts the names of networks it remembers, in the clear, whether or not they ' +
-      'are in range. Karma replies to each request claiming to be that network. The device ' +
-      'associates to the strongest reply — which is this radio, because nothing else is answering. ' +
-      'The names worth claiming come from the Analysis plan; the portal then asks for the ' +
-      'passphrase.',
+      'are in range. Karma replies to each request claiming to be that network, so the device ' +
+      'associates to the only thing answering. The names worth claiming come from the Analysis ' +
+      'plan. This is the class of attack that turns a phone\'s own remembered-network list ' +
+      'against it.',
     needs: [NEED.CAPTURE, NEED.TRANSMIT],
-    firmware: 'KARMA_START',
+    firmware: null,
+    firmwareNote:
+      'No firmware we have implements this. NRSuite has a hidden-AP detector and a captive portal, ' +
+      'but no SSID-pool lure — and its own feature list marks the SoftAP half-handshake experiment ' +
+      'that would carry it as not implemented. This is new firmware, not a wiring job.',
     action: 'karma',
   },
   {
@@ -97,12 +125,17 @@ export const ATTACKS = [
     built: 'planned',
     tagline: 'A full fake network for devices that have stopped asking for anything.',
     detail:
-      'Newer devices stop broadcasting remembered names when they are not looking for them, which ' +
+      'Newer devices stop broadcasting remembered names when they are not actively looking, which ' +
       'leaves plain Karma with nothing to answer. Mana does not wait to be asked: it beacons a ' +
       'list of network names continuously, so a device that recognises one connects on its own. ' +
-      'It also answers probes, so it covers both kinds of client.',
+      'It answers probes as well, so it covers both kinds of client. The handshake or the portal ' +
+      'password is the payoff.',
     needs: [NEED.CAPTURE, NEED.TRANSMIT],
-    firmware: 'MANA_START',
+    firmware: null,
+    firmwareNote:
+      'No firmware we have implements this either. Beacon spam and a captive portal exist ' +
+      'separately in NRSuite; the piece that does not exist is the part that beacons a chosen ' +
+      'name list and drives the client to associate. New firmware.',
     action: 'mana',
   },
 ];

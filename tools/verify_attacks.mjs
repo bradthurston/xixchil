@@ -54,7 +54,7 @@ for (const m of MODULES) {
   writeFileSync(join(stage, `${m}.mjs`), src);
 }
 
-const { NEED, ATTACKS, attackList, runnable, blockedOnTransmit, evaluate } =
+const { NEED, ATTACKS, FIRMWARE_COMMANDS, attackList, runnable, blockedOnTransmit, evaluate } =
   await import(pathToFileURL(join(stage, 'attacks.mjs')).href);
 const { extractHandshakes, hashFile } = await import(pathToFileURL(join(stage, 'crack.mjs')).href);
 const { CrackBridge } = await import(pathToFileURL(join(stage, 'bridge.mjs')).href);
@@ -76,13 +76,29 @@ ok(badNeeds.length === 0, 'every declared need is a known requirement',
 const missingText = ATTACKS.filter((a) => a.needs.some((n) => !a.needs.length || !n));
 ok(missingText.length === 0, 'no attack declares an empty requirement');
 
-// A transmit attack without a firmware command would be a dead end described
-// vaguely; one with a command but no transmit need would not be gated.
-const transmitWithCmd = ATTACKS.filter((a) => a.needs.includes(NEED.TRANSMIT) && a.firmware);
-const transmitNoCmd = ATTACKS.filter((a) => a.needs.includes(NEED.TRANSMIT) && !a.firmware);
-ok(transmitNoCmd.length === 0,
-   'every transmit attack names the firmware command it would drive',
-   transmitNoCmd.map((a) => a.id).join(', '));
+// A named firmware command must be one that actually exists. This is the check
+// that stops the library describing a plan as though it were a feature: an
+// invented command name reads exactly like a real one and would sit there
+// looking buildable forever.
+const invented = ATTACKS.filter((a) => a.firmware && !FIRMWARE_COMMANDS.has(a.firmware));
+ok(invented.length === 0,
+   'every named firmware command exists in the firmware',
+   invented.map((a) => `${a.id}: ${a.firmware}`).join('\n'));
+
+// Every attack says something about its firmware situation — either the command
+// it drives or that none exists. Silence here would leave the reader guessing
+// whether the gap was considered.
+const noNote = ATTACKS.filter((a) => !a.firmwareNote || !a.firmwareNote.trim());
+ok(noNote.length === 0,
+   'every attack explains its firmware situation',
+   noNote.map((a) => a.id).join(', '));
+
+// An attack with no firmware command must say so in words, not just carry a
+// null — the note is what the UI shows.
+const nullNoNote = ATTACKS.filter((a) => !a.firmware && !/no firmware|offline/i.test(a.firmwareNote));
+ok(nullNoNote.length === 0,
+   'an attack with no firmware command says so plainly',
+   nullNoNote.map((a) => `${a.id}: ${a.firmwareNote}`).join('\n'));
 
 const cmdWithoutTransmit = ATTACKS.filter((a) => a.firmware && !a.needs.includes(NEED.TRANSMIT));
 ok(cmdWithoutTransmit.length === 0,

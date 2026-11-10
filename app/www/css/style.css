@@ -342,6 +342,16 @@ button.danger  { background: #3a1a17; border-color: #5c2a25; color: #ffb3ad; }
 
 .atktag { font-size: 12.5px; color: #b9c4d0; margin-top: 7px; }
 
+/* What firmware this would drive — or that none exists. Named commands are set
+   in mono so a real one is distinguishable from prose at a glance. */
+.atkfw { font-size: 11.5px; color: var(--muted); margin-top: 6px; line-height: 1.45; }
+.atkfw code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px; color: var(--accent);
+  background: #14212c; border: 1px solid #2f6d9e; border-radius: 4px;
+  padding: 1px 5px; margin-right: 2px;
+}
+
 /* Blockers: the unmet requirement is named first, then why it is unmet. */
 .blockers { list-style: none; margin: 8px 0 0; padding: 0; }
 .blockers li {
