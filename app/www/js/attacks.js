@@ -143,7 +143,12 @@ export const ATTACKS = [
       'link — that decision has to be made again inside the firmware loop. No KARMA_* command exists ' +
       'anywhere: NRSuite has a hidden-AP detector and a captive portal but no SSID-pool lure, and ' +
       'its own feature list marks the SoftAP half-handshake experiment that would carry this as not ' +
-      'implemented.',
+      'implemented. ' +
+      'Scoping is a separate switch and both settings exist: an allowlist answers only the names ' +
+      'listed, and an empty list answers nothing; a lab-any mode answers whatever a device asks ' +
+      'for. Reaching lab-any takes the exact token, so a typo or a stale value falls back to the ' +
+      'allowlist and closes the gate rather than opening it, and it is an argument rather than a ' +
+      'saved setting, so a restart cannot leave it switched on.',
     action: 'karma',
   },
   {
@@ -168,7 +173,9 @@ export const ATTACKS = [
       'for the sustained half. Beaconing a pool continuously while also answering probes needs ' +
       'receive-and-transmit inside the loop, and nothing dispatches a MANA_* command anywhere. ' +
       'NRSuite beacons a single name and runs a captive portal as separate features; the pieces ' +
-      'that do not exist are the name list and the drive to associate.',
+      'that do not exist are the name list and the drive to associate. ' +
+      'Scoping here is the pool itself: the beacon builder refuses an empty name list, so there is ' +
+      'no equivalent of a beacon-everything switch that could be left on by accident.',
     action: 'mana',
   },
 ];

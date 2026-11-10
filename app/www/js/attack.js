@@ -365,40 +365,69 @@ export function buildBeaconPool({ ssids, bssid, channel = 6, security = SECURITY
 /**
  * Which probe requests get an answer — the scoping gate.
  *
- * This is the design fork the project write-up says to settle *before* the
- * beacon TX exists, and it is settled here in the only direction that is safe
- * by default: **an empty allowlist answers nothing.** There is no wildcard and
- * no "answer everything" mode, because the thing being scoped is a rogue AP
- * that a stranger's device could associate to, and that is interception of
- * someone else's traffic. On our own devices or in a lab that is fine; applied
- * to whoever walks past, it is not. Defaulting closed means the failure mode of
- * a forgotten allowlist is "it did nothing", not "it did something to a
- * bystander".
+ * Two modes, and the default is the safe one:
+ *
+ *   SCOPE_ALLOWLIST (default)  only names explicitly listed are answered, and an
+ *                              empty list answers nothing at all.
+ *   SCOPE_LAB_ANY              every probe is answered, whatever name it asks for.
+ *
+ * The write-up originally said there would be no "answer everything" mode. That
+ * was the right default to build first, but it is not the only reasonable one:
+ * on the bench, answering whatever your own devices ask for is the whole point,
+ * and having to type each name in beforehand just makes the test worse. So the
+ * mode exists, with the reasoning above changed rather than quietly dropped.
+ *
+ * What keeps it honest is not that it is hard to reach but that it cannot be
+ * reached *by accident*:
+ *
+ *   - the default is unchanged, so forgetting to think about scoping is still
+ *     "it did nothing";
+ *   - only the exact token opens it. A typo, a stale config value, a boolean, a
+ *     casing difference — all fall back to the allowlist path, where an empty
+ *     list means silence. It fails closed, and `verify_karma.mjs` pins that with
+ *     the near-misses rather than trusting the comparison to stay exact;
+ *   - it is a call argument, never stored state, so it cannot be left switched on
+ *     across a restart the way a persisted setting could;
+ *   - every returned directive carries which mode produced it, so the UI and the
+ *     log can say "lab-any" out loud instead of an answer looking like a normal
+ *     allowlist hit.
+ *
+ * The remaining rule is not a policy choice and does not change with the mode:
+ * a group address is never answered, because an addr1 with the I/G bit set is
+ * multicast and nothing is listening on it.
  *
  * `probes` is an Analyze result's `probes` array: one entry per remembered name
- * a device asked for, with `ssid` and `stations`. Entries are matched by exact
- * SSID against the allowlist; a name that remembers no station is skipped,
- * because there is nobody to answer.
+ * a device asked for, with `ssid` and `stations`. In allowlist mode entries are
+ * matched by exact SSID — never a substring — and a name that remembers no
+ * station is skipped, because there is nobody to answer.
  *
  * Returns one directive per answerable probe. It builds no frames and touches no
  * transport, so it is a pure function and testable on the bench.
  */
-export function scopedProbeTargets(probes, { allowlist = [] } = {}) {
+export const SCOPE_ALLOWLIST = 'allowlist';
+export const SCOPE_LAB_ANY = 'lab-any';
+
+export function scopedProbeTargets(probes, { allowlist = [], mode = SCOPE_ALLOWLIST } = {}) {
   if (!Array.isArray(probes)) return [];
-  if (!Array.isArray(allowlist) || allowlist.length === 0) return [];
-  const allowed = new Set(allowlist);
+  // Exact-token comparison, deliberately. Anything that is not literally
+  // SCOPE_LAB_ANY keeps the allowlist behaviour, so a typo closes the gate
+  // rather than opening it.
+  const answerAny = mode === SCOPE_LAB_ANY;
+  const allowed = new Set(Array.isArray(allowlist) ? allowlist : []);
+  if (!answerAny && allowed.size === 0) return [];
+  const scope = answerAny ? SCOPE_LAB_ANY : SCOPE_ALLOWLIST;
   const out = [];
   const seen = new Set();
   for (const p of probes) {
     const ssid = p && p.ssid;
     if (typeof ssid !== 'string' || !ssid) continue;
-    if (!allowed.has(ssid)) continue;
+    if (!answerAny && !allowed.has(ssid)) continue;
     const stations = Array.isArray(p.stations) ? p.stations : [];
     for (const st of stations) {
       const mac = typeof st === 'string' ? st : st && st.mac;
-      // Never answer a group address. An addr1 with the I/G bit set is a
-      // multicast destination and nothing is listening on it — and a station
-      // list that contains one is a parsing bug upstream, not a client.
+      // Never answer a group address — true in both modes. An addr1 with the I/G
+      // bit set is a multicast destination and nothing is listening on it, and a
+      // station list containing one is a parsing bug upstream, not a client.
       if (typeof mac !== 'string') continue;
       let first;
       try { first = macToBytes(mac)[0]; } catch { continue; }
@@ -406,7 +435,7 @@ export function scopedProbeTargets(probes, { allowlist = [] } = {}) {
       const key = `${ssid}|${mac}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ ssid, station: mac, kind: 'probe-response' });
+      out.push({ ssid, station: mac, kind: 'probe-response', scope });
     }
   }
   return out;

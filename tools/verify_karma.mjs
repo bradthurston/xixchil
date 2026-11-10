@@ -14,10 +14,12 @@
 //      protected claim and none on an open one, and Privacy agreeing with the
 //      RSN IE. A client that is paying attention rejects a self-contradictory
 //      AP, and "valid" is not the same as "believable".
-//   2. The **scoping** checks. `scopedProbeTargets` answers nothing when the
-//      allowlist is empty, and that is pinned as a hard requirement rather than
-//      left as a default. See the note in attack.js: the thing being scoped is a
-//      rogue AP a stranger's device could join.
+//   2. The **scoping** checks. The gate has two modes and the default is the safe
+//      one: `scopedProbeTargets` answers nothing when the allowlist is empty,
+//      unless it is asked for `SCOPE_LAB_ANY`, which answers every probe. What
+//      these pin is that the second mode cannot be reached *by accident* — every
+//      near-miss token is checked, not just the happy path — because a scoping
+//      gate that opens on a typo is worse than one that does not exist.
 //
 // Run: node tools/verify_karma.mjs
 // Exit 0 = all green.
@@ -39,6 +41,7 @@ const {
   informationElements, capabilityInfo, ssidTag, dsParameterTag, rsnTag,
   SECURITY, TAG, SUBTYPE_BEACON, SUBTYPE_PROBE_RESPONSE, BROADCAST,
   DEFAULT_BEACON_INTERVAL, macToBytes, bytesToMac,
+  SCOPE_ALLOWLIST, SCOPE_LAB_ANY,
 } = A;
 
 const BSSID = 'aa:bb:cc:dd:ee:ff';
@@ -182,6 +185,56 @@ const throws = (fn) => { try { fn(); return false; } catch { return true; } };
   const frames = one.map((t) => buildProbeResponse({ ssid: t.ssid, station: t.station, bssid: BSSID, channel: 6 }));
   check('each scoped target builds a probe response',
     frames.length === 1 && (frames[0][0] >> 4) === SUBTYPE_PROBE_RESPONSE);
+}
+
+// ── the scoping gate: lab-any, and every way it has to fail closed ──────────
+{
+  const probes = [
+    { ssid: 'Foo-Cafe', stations: [STA] },
+    { ssid: 'Neighbour', stations: ['aa:bb:cc:dd:ee:01'] },
+    { ssid: 'Foo-Cafe', stations: [STA] },                        // duplicate
+    { ssid: 'Foo-Cafe', stations: ['ff:ff:ff:ff:ff:ff'] },        // group address
+    { ssid: 'Foo-Cafe', stations: ['01:00:5e:00:00:01'] },        // multicast
+    { ssid: 'Silent', stations: [] },                             // nobody to answer
+  ];
+
+  const any = scopedProbeTargets(probes, { mode: SCOPE_LAB_ANY });
+  check('lab-any answers a name the allowlist would have rejected',
+    any.some((t) => t.ssid === 'Neighbour'), JSON.stringify(any));
+  check('lab-any answers every answerable probe exactly once', any.length === 2, JSON.stringify(any));
+  check('lab-any still refuses a group address — mode does not change that',
+    any.every((t) => (macToBytes(t.station)[0] & 0x01) === 0));
+  check('lab-any skips a name with nobody asking for it',
+    !any.some((t) => t.ssid === 'Silent'));
+  check('lab-any answers each station separately',
+    scopedProbeTargets([{ ssid: 'A', stations: [STA, 'aa:bb:cc:dd:ee:02'] }],
+      { mode: SCOPE_LAB_ANY }).length === 2);
+  check('lab-any needs no allowlist at all',
+    scopedProbeTargets(probes, { mode: SCOPE_LAB_ANY, allowlist: [] }).length === 2);
+  check('lab-any does not care that the allowlist is not an array',
+    scopedProbeTargets(probes, { mode: SCOPE_LAB_ANY, allowlist: 'all' }).length === 2);
+
+  // The directives say which mode produced them, so an any-mode answer cannot
+  // pass itself off as an ordinary allowlist hit in the UI or the log.
+  check('lab-any marks its directives', any.every((t) => t.scope === SCOPE_LAB_ANY));
+  check('the allowlist path marks its directives',
+    scopedProbeTargets(probes, { allowlist: ['Foo-Cafe'] }).every((t) => t.scope === SCOPE_ALLOWLIST));
+
+  // The part that actually matters. Only the exact token opens the gate; every
+  // one of these is a plausible way to get it wrong, and each has to be silence.
+  const nearMisses = ['any', 'ANY', 'labany', 'lab_any', 'Lab-Any', 'LAB-ANY', 'lab-any ',
+    ' lab-any', 'lab-anyx', '', 'true', true, 1, 0, null, undefined, [], {}, ['lab-any']];
+  for (const m of nearMisses) {
+    check(`mode ${JSON.stringify(m)} does not open the gate`,
+      scopedProbeTargets(probes, { mode: m }).length === 0,
+      `got ${scopedProbeTargets(probes, { mode: m }).length} targets`);
+  }
+  check('an unknown mode with an allowlist falls back to allowlist behaviour',
+    scopedProbeTargets(probes, { mode: 'nonsense', allowlist: ['Foo-Cafe'] }).length === 1);
+  check('lab-any is not reachable by omitting mode',
+    scopedProbeTargets(probes, { allowlist: [] }).length === 0);
+  check('lab-any is not reachable by passing no options at all',
+    scopedProbeTargets(probes).length === 0);
 }
 
 // ── tshark is the judge ─────────────────────────────────────────────────────
