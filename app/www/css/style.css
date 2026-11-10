@@ -226,3 +226,83 @@ button.danger  { background: #3a1a17; border-color: #5c2a25; color: #ffb3ad; }
   border: 1px solid var(--line); border-radius: 5px;
   padding: 1px 5px; margin-left: 4px; vertical-align: 1px;
 }
+
+/* ── analysis (stage 3) ─────────────────────────────────── */
+.topnote {
+  display: flex; align-items: center; gap: 8px; margin-top: 12px;
+  padding: 10px 12px; border-radius: 10px;
+  background: #14212c; border: 1px solid #2f6d9e; color: #cfe8ff;
+  font-size: 12.5px;
+}
+.topnote .icon { flex: none; color: #7cc4ff; }
+.topnote strong { color: #fff; }
+
+.targetlist, .roguelist { display: flex; flex-direction: column; gap: 9px; }
+
+.target {
+  border: 1px solid var(--line); border-left-width: 3px;
+  border-radius: 11px; padding: 11px 12px; background: var(--surface-2);
+}
+.target.high { border-left-color: var(--err);  background: #1c1312; }
+.target.med  { border-left-color: var(--warn); background: #1d1810; }
+.target.low  { border-left-color: var(--line); }
+
+.thead { display: flex; align-items: flex-start; gap: 10px; }
+.trank {
+  flex: none; min-width: 26px; font-size: 12px; font-weight: 700;
+  color: var(--muted); letter-spacing: .5px; padding-top: 1px;
+}
+.tmain { flex: 1; min-width: 0; }
+.tname { font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+.tmeta {
+  font-size: 11.5px; color: var(--muted); margin-top: 2px;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+.tscore {
+  flex: none; text-align: right; font-size: 17px; font-weight: 700;
+  font-variant-numeric: tabular-nums; line-height: 1.1;
+}
+.tscore span {
+  display: block; font-size: 9.5px; font-weight: 500;
+  color: var(--muted); letter-spacing: .4px;
+}
+
+.tverdict {
+  font-size: 12.5px; font-weight: 650; margin-top: 8px; color: #ffd9a3;
+}
+
+.reasons { list-style: none; margin: 7px 0 0; padding: 0; }
+.reasons li {
+  display: flex; gap: 8px; align-items: baseline;
+  font-size: 12px; color: var(--muted); padding: 1.5px 0;
+}
+.reasons li.zero { opacity: .72; }
+.reasons .rp {
+  flex: none; min-width: 30px; text-align: right;
+  font-variant-numeric: tabular-nums; font-weight: 650; color: #5a6672;
+}
+.reasons .rp.up   { color: var(--ok); }
+.reasons .rp.down { color: var(--err); }
+.reasons .rt { flex: 1; overflow-wrap: anywhere; }
+
+.taction {
+  display: flex; align-items: center; gap: 7px; margin-top: 9px;
+  padding: 8px 11px; border-radius: 9px;
+  font-size: 12.5px; font-weight: 650;
+  background: #3a1a17; border: 1px solid #5c2a25; color: #ffb3ad;
+}
+.taction .icon { flex: none; }
+.taction.none, .taction.listen, .taction.associate {
+  background: transparent; border-color: var(--line); color: var(--muted);
+}
+
+.rogueitem {
+  border: 1px solid var(--line); border-left-width: 3px;
+  border-radius: 10px; padding: 9px 11px; background: var(--surface-2);
+}
+.rogueitem.void  { border-left-color: var(--warn); background: #1d1810; }
+.rogueitem.onair { border-left-color: var(--line); }
+.rssid { font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+.rmeta { font-size: 11.5px; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.rnote { font-size: 12px; color: var(--muted); margin-top: 5px; }
+.rogueitem.void .rnote { color: #ffd9a3; }

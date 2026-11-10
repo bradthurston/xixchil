@@ -1,0 +1,39 @@
+analysis: stage 3 — turn the inventory into a ranked, explainable plan
+
+Analysis is the stage between reading the air and acting on it. It is a pure
+function of an Analyze result: no transport, no DOM, no device, so the ranking
+can change without a reflash.
+
+Every target carries the action that follows from its verdict (deauth-capture,
+associate, listen) plus the reasons behind its score, so the ranking is
+explainable rather than a magic number. The score is the sum of its stated
+reasons, which a test pins.
+
+Decisions worth keeping:
+
+- A network with no crackable secret (WPA3-SAE, enterprise) scores 0 outright.
+  Letting signal strength inflate it would rank an unattackable network above a
+  real one.
+- Only the generic "crack it" verdict degrades to "wait for a client". A
+  mode-specific insight — a transition network's downshift — survives having no
+  client to deauth.
+- Rogue-AP candidates sort un-answered names first: a name a device keeps asking
+  for that no AP is answering is the strongest play, because a rogue AP claiming
+  it would be the only AP claiming it.
+
+New:
+- app/www/js/analysis.js  — the plan
+- app/www/js/app.js       — Analysis panel + report export
+- app/www/css/style.css   — target and rogue-AP cards
+- tools/verify_analysis.mjs — 36 checks, incl. score == sum of reasons
+- tools/plan_capture.mjs  — run Analyze + Analysis over a pcap on the bench
+
+The report export writes with encoding utf8: Capacitor's Filesystem assumes
+base64 for a string `data` unless told otherwise, and a base64 decode of plain
+text silently produces garbage.
+
+Also corrects a stale comment in tools/analyze_capture.mjs that still described
+the fromDS bug rather than the rule that replaced it.
+
+Verified on the phone — 172 frames, 0 dropped, plan rendered with the expected
+scores — and reproduced exactly by the bench tool on the same capture.

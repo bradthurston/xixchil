@@ -9,6 +9,7 @@ import { UsbTransport } from './transport.js';
 import { Icon, STAGE_ICONS } from './icons.js';
 import { CaptureSession } from './capture.js';
 import { analyzeChunks, findings } from './analyze.js';
+import { plan, reportText, topTarget } from './analysis.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -263,6 +264,7 @@ function renderStagePanel() {
   if (!box) return;
   if (state.stage === 'capture') { renderCapturePanel(box); return; }
   if (state.stage === 'analyze') { renderAnalyzePanel(box); return; }
+  if (state.stage === 'analysis') { renderAnalysisPanel(box); return; }
   box.innerHTML = `<div class="empty">${Icon(STAGE_ICONS[state.stage], { size: 30 })}
     <strong>${state.stage}</strong><br>Not wired yet.</div>`;
 }
@@ -399,6 +401,7 @@ async function onCaptureSave() {
 // Reading the capture. This is pure phone-side parsing of frames already synced
 // down, so there is no device round-trip and no way for it to disturb the radio.
 let analyzeResult = null;
+let analysisPlan = null;
 
 function renderAnalyzePanel(box) {
   const w = capture.writer;
@@ -524,6 +527,154 @@ function analyzeReportHtml(r) {
     ${r.clients.length ? `
       <div class="sechead">${Icon('device', { size: 16 })} Clients (${r.clients.length})</div>
       <div class="clientlist">${clientHtml}</div>` : ''}
+  `;
+}
+
+// ── stage 3: analysis ─────────────────────────────────────────────────────────
+// Analysis reads Analyze's result and produces a plan: which networks are worth
+// acting on, in what order, and why. Entirely phone-side — like Analyze, it
+// never touches the radio, so the ranking can change without a reflash.
+//
+// The plan is also what a one-tap flow consumes: each target carries the single
+// action that follows from its verdict (deauth-capture, associate, listen).
+
+function renderAnalysisPanel(box) {
+  const ready = !!analyzeResult;
+
+  box.innerHTML = `
+    <div class="stagehead">
+      ${Icon('analysis', { size: 22 })}
+      <div>
+        <div class="stagename">Analysis</div>
+        <div class="stagesub">Turn the inventory into a plan — what is worth doing, in what
+          order, and why. Nothing here touches the radio.</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <button id="plRun" class="primary" ${ready ? '' : 'disabled'}>
+        ${Icon('analysis', { size: 18 })}Build plan
+      </button>
+      <button id="plSave" class="ghost" ${analysisPlan ? '' : 'disabled'}>
+        ${Icon('save', { size: 18 })}Save report
+      </button>
+    </div>
+
+    ${ready ? '' : `<div class="empty">${Icon('analyze', { size: 30 })}
+      Nothing analysed yet.<br>Run Analyze first — Analysis reads its result.</div>`}
+
+    <div id="plOut">${analysisPlan ? analysisPlanHtml(analysisPlan) : ''}</div>
+  `;
+
+  $('#plRun')?.addEventListener('click', onAnalysisRun);
+  $('#plSave')?.addEventListener('click', onAnalysisSave);
+}
+
+function onAnalysisRun() {
+  if (!analyzeResult) return;
+  try {
+    analysisPlan = plan(analyzeResult);
+  } catch (e) {
+    log('err', 'analysis: ' + e.message);
+    return;
+  }
+  const s = analysisPlan.summary;
+  log('ev', `plan: ${s.attackable} attackable of ${s.networks} networks, ` +
+    `${s.skipped} skipped, ${s.rogueNames} un-answered leaked name${s.rogueNames === 1 ? '' : 's'}`);
+  const top = topTarget(analysisPlan);
+  if (top) log('ev', `best target: ${top.name} — ${top.action.label}`);
+  renderStagePanel();
+}
+
+/**
+ * Write the plan out as text.
+ *
+ * Unlike the pcap this is a string, so `encoding: 'utf8'` is load-bearing:
+ * Capacitor's Filesystem assumes base64 for a string `data` unless told
+ * otherwise, and a base64-decode of plain text silently produces garbage.
+ */
+async function onAnalysisSave() {
+  if (!analysisPlan) return;
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const name = `analysis-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
+    + `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.txt`;
+  try {
+    const fs = window.Capacitor?.Plugins?.Filesystem;
+    if (!fs) throw new Error('Filesystem plugin not available');
+    const res = await fs.writeFile({
+      path: `RadioConsole/${name}`,
+      data: reportText(analysisPlan),
+      directory: 'DOCUMENTS',
+      encoding: 'utf8',
+      recursive: true,
+    });
+    log('ev', `saved report ${res?.uri || name}`);
+  } catch (e) {
+    log('err', 'save report: ' + e.message);
+  }
+}
+
+function analysisPlanHtml(p) {
+  // As in renderAnalyzePanel: every value that came off the air — SSIDs, BSSIDs,
+  // the leaked names, the reason text — goes through escapeHtml before it
+  // reaches this template. Everything else is static markup or a number, so
+  // nothing untrusted is interpolated raw.
+  const s = p.summary;
+
+  const targetHtml = p.targets.map((t) => {
+    const reasons = t.reasons.map((r) => `
+      <li class="${r.points ? '' : 'zero'}">
+        <span class="rp ${r.points > 0 ? 'up' : r.points < 0 ? 'down' : ''}">${r.points > 0 ? '+' : ''}${r.points}</span>
+        <span class="rt">${escapeHtml(r.text)}</span>
+      </li>`).join('');
+
+    return `
+      <div class="target ${escapeHtml(t.level)}">
+        <div class="thead">
+          <div class="trank">${t.rank ? '#' + t.rank : '—'}</div>
+          <div class="tmain">
+            <div class="tname">${escapeHtml(t.name)}</div>
+            <div class="tmeta">${escapeHtml(t.bssid)} · ch${t.channel ?? '?'} · ${t.rssi ?? '?'} dBm · ${escapeHtml(t.security)}</div>
+          </div>
+          <div class="tscore">${t.score}<span>score</span></div>
+        </div>
+        <div class="tverdict">${escapeHtml(t.verdict)}</div>
+        <ul class="reasons">${reasons}</ul>
+        <div class="taction ${escapeHtml(t.action.type)}">${Icon('attack', { size: 15 })}${escapeHtml(t.action.label)}</div>
+      </div>`;
+  }).join('');
+
+  const rogueHtml = p.rogue.map((g) => `
+    <div class="rogueitem ${g.onAir ? 'onair' : 'void'}">
+      <div class="rssid">${escapeHtml(g.ssid)}</div>
+      <div class="rmeta">${g.count} request${g.count > 1 ? 's' : ''} · ${g.clients} device${g.clients > 1 ? 's' : ''} · ${g.bestRssi ?? '?'} dBm · ${g.onAir ? 'on air' : 'not on air'}</div>
+      <div class="rnote">${escapeHtml(g.note)}</div>
+    </div>`).join('');
+
+  const top = topTarget(p);
+
+  return `
+    <div class="secsum">
+      <div class="sechead">${Icon('analysis', { size: 16 })} Plan</div>
+      <dl class="kv">
+        <dt>networks</dt><dd>${s.networks}</dd>
+        <dt>attackable</dt><dd>${s.attackable}</dd>
+        <dt>skipped</dt><dd>${s.skipped}</dd>
+        <dt>un-answered names</dt><dd>${s.rogueNames}</dd>
+      </dl>
+      ${top ? `<div class="topnote">${Icon('attack', { size: 16 })}
+        <span>Best target: <strong>${escapeHtml(top.name)}</strong> — ${escapeHtml(top.action.label)}</span></div>` : ''}
+    </div>
+
+    <div class="sechead">${Icon('list', { size: 16 })} Targets (${p.targets.length})</div>
+    <div class="targetlist">${targetHtml || '<div class="empty">none</div>'}</div>
+
+    ${p.rogue.length ? `
+      <div class="sechead">${Icon('device', { size: 16 })} Rogue-AP candidates (${p.rogue.length})</div>
+      <div class="pnlnote">A name a device keeps asking for that no AP is answering is the
+        strongest play here — a rogue AP claiming it would be the only AP claiming it.</div>
+      <div class="roguelist">${rogueHtml}</div>` : ''}
   `;
 }
 

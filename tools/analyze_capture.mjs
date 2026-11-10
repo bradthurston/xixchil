@@ -5,12 +5,13 @@
 // be inspected at the bench without driving the app. It also cross-checks the
 // inventories against tshark.
 //
-// One trap this exists to document: tshark's wlan.sa is the literal source
-// field, while our "client" is the *inferred station* — a data frame's meaning
-// depends on the DS bits, so when fromDS is set the station lives in addr1 and
-// the AP in addr2. Comparing our client set to tshark's wlan.sa set directly is
-// apples to oranges and produces a phantom mismatch. So we re-derive the
-// station set from tshark's raw addresses using our own rule.
+// One trap this exists to document: a data frame's address roles depend on the
+// DS bits, so "the client" is an inference, not a field. When fromDS is set the
+// station is addr3 and the AP is addr2 — read addr1 instead and you get the
+// *destination*, which on an AP is usually a multicast group, and you invent
+// phantom clients. tshark's wlan.sa is the source *after* the DS bits, so it is
+// the same station we compute and is the correct like-for-like comparison;
+// wlan.ta / wlan.ra are the raw addr2 / addr1 and reproduce the bug.
 //
 // Run:  node tools/analyze_capture.mjs [path/to/capture.pcap]
 // Needs tshark on PATH.
