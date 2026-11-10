@@ -69,6 +69,37 @@ fail the first time it ran and neither of which is a frame bug: `wlan.ssid` come
 back as **hex of the raw bytes**, and `FT_BOOLEAN` fields come back as
 `True`/`False`, not `1`/`0`.
 
+## `verify_ui.mjs` — the seams between the two shell files
+
+Every other gate stages a *module* and exercises its logic, which makes a whole
+class of bug structurally invisible: the ones that live in how `index.html` and
+`app.js` fit together.
+
+    node tools/verify_ui.mjs
+
+It exists because of a real one. `index.html` ships
+`<button id="pingBtn"></button>` with no text, and `boot()` gave `refreshBtn` and
+`linkBtn` their labels while only attaching a click handler to `pingBtn` — so the
+button worked and rendered as a blank rectangle on the phone. No amount of
+testing `attacks.js` or `attack.js` in isolation can see that.
+
+Three checks, all static — there is no jsdom or headless renderer in this repo:
+
+- **Every empty `<button>` in the markup gets a label somewhere in the JS.** An
+  unlabelled control is unnameable on screen, and nothing else names it.
+- **Every `$('#id')` app.js reaches for is created somewhere** — in `index.html`,
+  or by one of the stage-panel templates. What this catches in practice is a
+  selector that disagrees with the id its own template writes. (The first version
+  only looked at `index.html` and reported 17 failures, all false positives,
+  because the stage panels build their controls dynamically. The premise was
+  wrong, not the code.)
+- **Every `Icon('name')` names an icon that exists.** A bad name draws nothing,
+  which is the blank-button failure wearing a different hat.
+
+The trade is honest: this catches "never labelled", not "labelled with something
+wrong". The string-quality half — no markdown leaking into an escaped-HTML
+surface, `built` labels only from the known set — lives in `verify_attacks.mjs`.
+
 ## Why the `.mjs` copy exists
 
 Node decides module type from the file extension plus the nearest `package.json`;

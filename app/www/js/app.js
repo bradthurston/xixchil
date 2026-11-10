@@ -1163,6 +1163,10 @@ function boot() {
   $('#connPill').innerHTML = '<span class="dot"></span>offline';
   $('#refreshBtn').innerHTML = Icon('refresh', { size: 18 }) + 'Scan';
   $('#linkBtn').innerHTML = Icon('unlink', { size: 18 }) + 'Disconnect';
+  // Every button in index.html starts as an empty <button> and gets its label
+  // here — this one was missing, so it shipped as a blank rectangle. The label
+  // is load-bearing: nothing else names the control. Guarded by verify_ui.mjs.
+  $('#pingBtn').innerHTML = Icon('plug', { size: 18 }) + 'Ping';
   $('#connectCard').querySelector('h2').textContent = 'Device';
 
   $('#refreshBtn').addEventListener('click', refreshDevices);
