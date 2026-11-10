@@ -12,12 +12,43 @@ Pull the power on the device and it is an empty dev board — nothing stored, no
 
 ## Status
 
-**Spike.** The link is the only thing that matters right now: prove that a Capacitor app
-can open the board over USB-OTG serial with no root and complete a PING round-trip. The
-four-stage flow is laid out in the UI but its stages are stubs.
+**Spike, and the firmware half of the link is now proven on hardware.** The firmware is
+flashed to a real N16R8 and answering real commands over USB serial. The one thing still
+unproven is the app's USB-OTG plumbing on the phone itself.
 
-- `firmware/` compiles clean (`pio run -e s3-n16r8`). **Not yet flashed** — no board attached.
-- `app/` builds a debug APK (`./gradlew assembleDebug`, 4.2 MB). **Not yet run on hardware.**
+| | state |
+|---|---|
+| `firmware/` | builds clean, **flashed and answering on hardware** — `PING`, `STATUS`, `STAGE`, `SCAN` (live Wi-Fi scan, 9 real APs) |
+| 8 MB PSRAM | **live at runtime** — `STATUS` reports `psram_total: 8388608` |
+| `app/` | builds a 4.2 MB debug APK; its protocol layer is **byte-verified against the board** (see `tools/`) |
+| `app/` on the Pixel | **not yet run** — the last open risk, and it needs the phone |
+
+The four-stage flow is laid out in the UI but its stages are stubs.
+
+## Verifying against real hardware
+
+A clean compile proves nothing about whether the app and the firmware actually agree, which
+is exactly the bug this project hit first (see below). `tools/` closes that gap:
+
+    PIO_PY=~/.local/share/pipx/venvs/platformio/bin/python
+    $PIO_PY tools/capture_ping.py /dev/ttyACM0
+    node      tools/verify_protocol.mjs
+
+`verify_protocol.mjs` imports the app's **real** `protocol.js` (copied at run time, so it
+cannot drift) and checks that its encoder produces byte-identical frames to the ones the
+device accepted, and that its decoder recovers what the device sent from awkward 7-byte
+chunks. See `tools/README.md`.
+
+### Two bugs only hardware could have found
+
+1. **Command case.** The firmware compared `strcmp(cmd, "ping")`; NRSuite — and therefore
+   this app, which is written against NRSuite's convention — sends uppercase `"PING"`.
+   Every command would have failed against real firmware while compiling perfectly.
+   Dispatch is now case-insensitive on purpose.
+2. **Blocking scan.** `WiFi.scanNetworks(false, …)` blocks for ~9 s, and the loop it blocks
+   is the same loop servicing the serial port. Commands were queued, not lost, but the app
+   looked dead for the whole scan. Now async: **PING replies in 50 ms during an 8.91 s
+   scan.**
 
 ## The protocol is not ours
 
@@ -54,11 +85,27 @@ it lacks is GPU-offloaded cracking, which is what this console adds.
 Target: **ESP32-S3-DevKitC-1 N16R8** (16 MB flash, 8 MB octal PSRAM).
 
     cd firmware
-    pio run -e s3-n16r8          # build
-    pio run -e s3-n16r8 -t upload # flash (needs a serial port)
+    pio run -e s3-n16r8                                      # build
+    pio run -e s3-n16r8 -t upload --upload-port /dev/ttyACM0 # flash
 
 PSRAM must stay enabled (`qio_opi`) — it is the capture buffer. On this board the Arduino
 core's default variant disables it; that is not an option here.
+
+Two transports, same framing, so the app does not care which is up:
+
+- **USB serial (primary)** — `src/serial_transport.h` listens on **both** S3 serial ports
+  and replies on whichever the command arrived on: `Serial` is the native USB port
+  (USB-Serial/JTAG, `303A:1001`), `Serial0` is UART0 behind the board's CH34x/CP210x
+  bridge (`1A86:55D3` here). Which one the phone lands on depends on the socket.
+- **BLE GATT (fallback)** — for the cableless mode, with MTU chunking.
+
+Debug output is on `SRC_DEBUG` and **off by default**: the ports carry frames, so a stray
+`printf` corrupts the stream.
+
+USB is deliberately **CDC-only** (`ARDUINO_USB_MODE=0`). A TinyUSB composite (CDC + HID +
+MSC) makes Android offer to mount the storage function and complicates the USB permission
+flow the app depends on. BadUSB/HID needs a separate build env — see the note in
+`platformio.ini`.
 
 ## App
 
