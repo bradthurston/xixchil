@@ -33,3 +33,4 @@ __pycache__/
 
 # capture test output
 tools/capture.pcap
+commit-msg.txt
