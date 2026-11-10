@@ -8,6 +8,7 @@
 //   addListener('data', ({ data }) => ...)   // base64
 //   startReading({ portId })
 //   write({ portId, data })                  // base64
+//   setDTR / setRTS({ portId, value })       // REQUIRED — see connect()
 //
 // No root required. This is the whole reason the phone-first design works.
 
@@ -72,6 +73,24 @@ export class UsbTransport {
       stopBits: 1,
       parity: 'none',
     });
+
+    // Assert DTR and RTS. This is not cosmetic — without it the link is a polite
+    // fiction, and it cost us a real debugging session:
+    //
+    //   * the plugin's open() only calls port.open();
+    //   * usb-serial-for-android's CdcAcmSerialPort defaults mDtr/mRts to false and
+    //     never sends SET_CONTROL_LINE_STATE from openInt();
+    //   * so DTR stays low, and the ESP32-S3 running TinyUSB (USBCDC) has
+    //     tud_cdc_n_connected() == false;
+    //   * USBCDC::write() returns 0 immediately in that state — it does not queue,
+    //     it does not error, it just drops the bytes.
+    //
+    // Reads are NOT gated the same way (USBCDC::available() only checks the rx
+    // queue), so the board happily receives commands, runs them, and has every
+    // reply thrown away. Symptom: app says "linked", PING goes out, nothing ever
+    // comes back, no error anywhere. Asserting DTR is what opens the board's TX.
+    await plugin().setDTR({ portId, value: true });
+    await plugin().setRTS({ portId, value: true });
 
     this.subs.push(await plugin().addListener('data', ({ data }) => {
       this.onData(base64ToBytes(data));
