@@ -279,6 +279,11 @@ export function parseChunk(chunk) {
     addr1, addr2, addr3, addr4,
     channel: rt.channel, freq: rt.freq, rssi: rt.rssi, tsft: rt.tsft,
     ssid: null, ies: [], security: null, capability: null, beaconInterval: null,
+    // Where the frame body starts. For data frames this is the LLC/SNAP header,
+    // which is what a payload-level parser (crack.js) needs to reach EAPOL. The
+    // header walk above is the only place that knows this, so it is published
+    // rather than re-derived — a second copy of the walk would drift.
+    payloadOff: p,
   };
 
   // Management frame bodies we care about.
