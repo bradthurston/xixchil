@@ -30,3 +30,6 @@ tools/ping_rx.bin
 tools/protocol.mjs
 
 __pycache__/
+
+# capture test output
+tools/capture.pcap
