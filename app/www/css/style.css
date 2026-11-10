@@ -162,3 +162,67 @@ button.danger  { background: #3a1a17; border-color: #5c2a25; color: #ffb3ad; }
   font-size: 12.5px; word-break: break-all;
 }
 .saved .icon { flex: none; }
+
+/* ── analyze ────────────────────────────────────────────── */
+.sechead {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; text-transform: uppercase; letter-spacing: .8px;
+  color: var(--muted); font-weight: 650;
+  margin: 18px 0 9px;
+}
+.sechead .icon { color: var(--accent); flex: none; }
+
+.findings { display: flex; flex-direction: column; gap: 8px; }
+.finding {
+  border: 1px solid var(--line); border-left-width: 3px;
+  border-radius: 10px; padding: 10px 12px; background: var(--surface-2);
+}
+.finding.high { border-left-color: var(--err);  background: #1c1312; }
+.finding.info { border-left-color: var(--accent); }
+.ftitle  { font-size: 13.5px; font-weight: 650; }
+.fdetail { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+
+.secsum {
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px; background: var(--surface-2);
+}
+.secsum .sechead:first-child { margin-top: 0; }
+
+.aplist, .clientlist, .pnllist { display: flex; flex-direction: column; gap: 6px; }
+.ap, .client {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 9px 11px; background: var(--surface-2);
+}
+.apicon { flex: none; display: flex; }
+.apicon.good { color: var(--ok); }
+.apicon.bad  { color: var(--err); }
+.apmain { flex: 1; min-width: 0; }
+.apssid, .cmac {
+  font-size: 13.5px; font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.apmeta, .cmeta {
+  font-size: 11.5px; color: var(--muted); margin-top: 2px;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+.apcount {
+  flex: none; text-align: right; font-size: 14px; font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.apcount span { display: block; font-size: 9.5px; font-weight: 500; color: var(--muted); letter-spacing: .4px; }
+
+.pnlnote { font-size: 12.5px; color: var(--muted); margin-bottom: 9px; }
+.pnlitem {
+  border: 1px solid #4a3a12; border-left: 3px solid var(--warn);
+  border-radius: 10px; padding: 9px 11px; background: #1d1810;
+}
+.pnlssid { font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+.pnlmeta { font-size: 11.5px; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+.tag {
+  font-size: 9.5px; font-weight: 650; letter-spacing: .4px;
+  text-transform: uppercase; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 5px;
+  padding: 1px 5px; margin-left: 4px; vertical-align: 1px;
+}

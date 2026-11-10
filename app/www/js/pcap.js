@@ -100,6 +100,10 @@ export function pcapSize(packets, payloadBytes) {
 export class PcapWriter {
   constructor({ t0Us = null, t0WallMs = null } = {}) {
     this.parts = [globalHeader()];
+    // The raw radiotap+frame chunks, kept alongside the file image. The file
+    // itself is opaque once assembled, so the Analyze stage parses from here
+    // rather than re-reading what we just wrote.
+    this.chunks = [];
     this.bytes = 24;
     this.packets = 0;
     this.payloadBytes = 0;
@@ -137,6 +141,7 @@ export class PcapWriter {
 
     this.parts.push(recordHeader(tsSec, tsUsec, chunk.length, chunk.length));
     this.parts.push(chunk);
+    this.chunks.push(chunk);
     this.bytes += 16 + chunk.length;
     this.payloadBytes += chunk.length;
     this.packets++;

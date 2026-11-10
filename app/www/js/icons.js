@@ -22,6 +22,10 @@ const PATHS = {
   chevron:  '<path d="m9 6 6 6-6 6"/>',
   stop:     '<rect x="6" y="6" width="12" height="12" rx="2.5"/>',
   save:     '<path d="M12 3v12"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M5 20h14"/>',
+  lock:     '<rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
+  unlock:   '<rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 7.6-1.8"/>',
+  device:   '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.6h2"/>',
+  list:     '<path d="M8 6h12"/><path d="M8 12h12"/><path d="M8 18h12"/><circle cx="4.2" cy="6" r=".9"/><circle cx="4.2" cy="12" r=".9"/><circle cx="4.2" cy="18" r=".9"/>',
 };
 
 export function Icon(name, { size = 22, strokeWidth = 1.75, className = '' } = {}) {
