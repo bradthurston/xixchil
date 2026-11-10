@@ -1,0 +1,25 @@
+# firmware
+firmware/.pio/
+firmware/.vscode/
+
+# app
+app/node_modules/
+app/android/.gradle/
+app/android/build/
+app/android/app/build/
+app/android/local.properties
+app/android/app/src/main/assets/public/
+app/android/app/src/main/assets/capacitor.config.json
+app/android/app/src/main/assets/capacitor.plugins.json
+app/android/capacitor-cordova-android-plugins/
+app/.gradle/
+
+# signing
+*.keystore
+*.jks
+keystore.properties
+signing.keystore
+
+# os / editor
+.DS_Store
+*.swp

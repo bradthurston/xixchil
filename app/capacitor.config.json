@@ -1,0 +1,11 @@
+{
+  "appId": "com.bradthurston.phoneradio",
+  "appName": "Radio Console",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

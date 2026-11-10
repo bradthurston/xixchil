@@ -1,0 +1,21 @@
+{
+  "name": "phone-radio-console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phone console for a headless ESP32 radio. Capture, analyze, crack.",
+  "license": "MIT",
+  "scripts": {
+    "build": "cap copy",
+    "sync": "cap sync",
+    "open:android": "cap open android",
+    "build:android": "cap sync android && cd android && ./gradlew clean assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.3.0",
+    "@leeskies/capacitor-usb-serial": "^0.2.0"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.3.0",
+    "@capacitor/cli": "^8.3.0"
+  }
+}

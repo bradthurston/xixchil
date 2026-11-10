@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="color-scheme" content="dark">
+<title>Radio Console</title>
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#4ea8ff" stroke-width="1.75"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 13v8"/><path d="M5.5 9.5a9 9 0 0 1 13 0"/>
+      <path d="M8.5 12.5a5 5 0 0 1 7 0"/><circle cx="12" cy="12" r="1.2"/>
+    </svg>
+    <h1>Radio Console</h1>
+    <span class="pill" id="connPill"><span class="dot"></span>offline</span>
+  </header>
+
+  <main>
+
+    <!-- ── connect ─────────────────────────────────────────────── -->
+    <section class="card" id="connectCard">
+      <h2>Device</h2>
+      <div id="deviceList"></div>
+      <button class="block ghost" id="refreshBtn" style="margin-top:10px"></button>
+    </section>
+
+    <!-- ── console ─────────────────────────────────────────────── -->
+    <section class="card hidden" id="consoleCard">
+      <h2>Link</h2>
+      <div id="deviceInfo"></div>
+      <div class="row" style="margin-top:12px">
+        <button id="pingBtn"></button>
+        <button class="ghost" id="linkBtn"></button>
+      </div>
+    </section>
+
+    <!-- ── staged flow ─────────────────────────────────────────── -->
+    <section class="card hidden" id="consoleCard2">
+      <h2>Flow</h2>
+      <div class="stages" id="stages"></div>
+    </section>
+
+    <section class="card hidden" id="consoleCard3">
+      <div id="stagePanel"></div>
+    </section>
+
+    <!-- ── log ─────────────────────────────────────────────────── -->
+    <section class="card">
+      <h2>Trace</h2>
+      <pre id="log"></pre>
+    </section>
+
+  </main>
+</div>
+
+<script type="module" src="./js/app.js"></script>
+<script>
+  // The flow cards share the console's visibility. Keep them in sync without
+  // duplicating the toggle logic in app.js.
+  const sync = () => {
+    const on = document.getElementById('consoleCard').classList.contains('hidden') === false;
+    ['consoleCard2', 'consoleCard3'].forEach((id) =>
+      document.getElementById(id).classList.toggle('hidden', !on));
+  };
+  new MutationObserver(sync)
+    .observe(document.getElementById('consoleCard'), { attributes: true, attributeFilter: ['class'] });
+  window.addEventListener('DOMContentLoaded', sync);
+</script>
+</body>
+</html>
