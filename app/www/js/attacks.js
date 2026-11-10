@@ -123,7 +123,7 @@ export const ATTACKS = [
     name: 'Karma',
     icon: 'antenna',
     kind: 'transmit',
-    built: 'planned',
+    built: 'partial',
     tagline: 'Answer every device that asks for a network by name, and be the only one that answers.',
     detail:
       'A device broadcasts the names of networks it remembers, in the clear, whether or not they ' +
@@ -134,9 +134,16 @@ export const ATTACKS = [
     needs: [NEED.CAPTURE, NEED.TRANSMIT, NEED.FIRMWARE],
     firmware: null,
     firmwareNote:
-      'No firmware we have implements this. NRSuite has a hidden-AP detector and a captive portal, ' +
-      'but no SSID-pool lure — and its own feature list marks the SoftAP half-handshake experiment ' +
-      'that would carry it as not implemented. This is new firmware, not a wiring job.',
+      'Half of this now exists and is verified. The app builds the probe response and tshark decodes ' +
+      'it exactly as written — subtype 0x0005, the asking station in addr1, our address in addr2 and ' +
+      'addr3, the claimed name, the channel, and an RSN IE whose Privacy bit agrees with it ' +
+      '(tools/verify_karma.mjs). Still missing: no firmware drives it. Answering a probe ' +
+      'means receiving one and transmitting in the same breath, and the capture path buffers to ' +
+      'PSRAM and syncs at a stage boundary on purpose, so a busy channel cannot silently outrun the ' +
+      'link — that decision has to be made again inside the firmware loop. No KARMA_* command exists ' +
+      'anywhere: NRSuite has a hidden-AP detector and a captive portal but no SSID-pool lure, and ' +
+      'its own feature list marks the SoftAP half-handshake experiment that would carry this as not ' +
+      'implemented.',
     action: 'karma',
   },
   {
@@ -144,7 +151,7 @@ export const ATTACKS = [
     name: 'Mana',
     icon: 'antenna',
     kind: 'transmit',
-    built: 'planned',
+    built: 'partial',
     tagline: 'A full fake network for devices that have stopped asking for anything.',
     detail:
       'Newer devices stop broadcasting remembered names when they are not actively looking, which ' +
@@ -155,9 +162,13 @@ export const ATTACKS = [
     needs: [NEED.CAPTURE, NEED.TRANSMIT, NEED.FIRMWARE],
     firmware: null,
     firmwareNote:
-      'No firmware we have implements this either. Beacon spam and a captive portal exist ' +
-      'separately in NRSuite; the piece that does not exist is the part that beacons a chosen ' +
-      'name list and drives the client to associate. New firmware.',
+      'Same split as Karma, and it is the same half that is done: the app builds the beacon and ' +
+      'tshark reads back the claimed name, the channel, the capability bits and the RSN IE, so this ' +
+      'is real frames rather than a sketch (tools/verify_karma.mjs). Still missing: no firmware ' +
+      'for the sustained half. Beaconing a pool continuously while also answering probes needs ' +
+      'receive-and-transmit inside the loop, and nothing dispatches a MANA_* command anywhere. ' +
+      'NRSuite beacons a single name and runs a captive portal as separate features; the pieces ' +
+      'that do not exist are the name list and the drive to associate.',
     action: 'mana',
   },
 ];

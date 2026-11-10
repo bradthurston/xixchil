@@ -105,6 +105,33 @@ ok(cmdWithoutTransmit.length === 0,
    'every attack that names a firmware command is gated on transmit',
    cmdWithoutTransmit.map((a) => a.id).join(', '));
 
+// The panel renders these strings through escapeHtml, which is correct and also
+// means markdown is not interpreted — `**bold**` reaches the screen as literal
+// asterisks. Caught by writing `**There is still no firmware...**` in a note and
+// then reading how app.js actually renders it. Pinned here so the next person
+// writing an emphatic note finds out from the gate rather than from the phone.
+const MARKUP = /(\*\*|__|`|^\s*#|\]\()/;
+const markdownish = ATTACKS.filter((a) => MARKUP.test(a.firmwareNote || '') ||
+  MARKUP.test(a.tagline || '') || MARKUP.test(a.detail || ''));
+ok(markdownish.length === 0,
+   'no user-facing attack text carries markdown (the panel escapes HTML, it does not render it)',
+   markdownish.map((a) => a.id).join(', '));
+
+// `built` is rendered verbatim as a label next to the attack's kind, so an
+// unrecognised value is a typo the operator reads on the phone.
+const BUILT = ['ready', 'partial', 'planned'];
+const badBuilt = ATTACKS.filter((a) => !BUILT.includes(a.built));
+ok(badBuilt.length === 0,
+   `every attack declares a known build state (${BUILT.join(', ')})`,
+   badBuilt.map((a) => `${a.id}: ${a.built}`).join(', '));
+
+// The two half-built attacks must not read as finished. This is the library half
+// of Rule 23: a frame builder landing must not make an attack look runnable.
+const halfBuilt = ATTACKS.filter((a) => a.built === 'partial');
+ok(halfBuilt.every((a) => !a.firmware),
+   'an attack marked partial still has no firmware command behind it',
+   halfBuilt.filter((a) => a.firmware).map((a) => a.id).join(', '));
+
 // The crack attack must not claim to need the radio — it is offline work, and
 // gating it on transmit would hide the one attack that actually runs.
 const crack = ATTACKS.find((a) => a.id === 'crack');

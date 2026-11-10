@@ -37,6 +37,38 @@ committed duplicate that can drift. It then checks:
 
 Expected output ends in `ALL CHECKS PASSED`.
 
+## `verify_deauth.mjs` + `verify_karma.mjs` — the frames the radio is asked to send
+
+Stage 4 builds frames in `app/www/js/attack.js` as pure functions and hands the
+bytes to a deliberately dumb transmitter (`TX_FRAME`). The firmware cannot
+validate what it sends — that is the price of keeping the frame builder where it
+is testable — so the check has to happen here, and **tshark is the judge**:
+
+    node tools/verify_deauth.mjs    # deauth: subtype, addresses, reason code
+    node tools/verify_karma.mjs     # Karma/Mana: probe response + beacon
+
+Both stage the real `attack.js` the same way `verify_protocol.mjs` stages
+`protocol.js`, wrap the frames in a real libpcap with LINKTYPE_IEEE802_11, and
+read them back with tshark. A frame that is self-consistent but mis-encoded
+passes every offset assertion and still fails these — which is exactly how the
+reason-code byte order bug in the reference implementation showed up.
+
+`verify_karma.mjs` pins two things beyond decoding:
+
+- **Shape.** One Supported Rates IE carrying eight rates, an RSN IE on a
+  protected claim and none on an open one, and the Privacy capability bit
+  agreeing with the RSN IE. A client that is paying attention rejects an AP that
+  contradicts itself, so "it parses" is not the bar — see the kept counterexample
+  at the end of the file.
+- **Scoping.** `scopedProbeTargets` answers nothing when its allowlist is empty.
+  Pinned as a hard requirement rather than left as a default: the thing being
+  scoped is a rogue AP that a stranger's device could join.
+
+Two output-format traps in `tshark -T fields`, both of which made the karma test
+fail the first time it ran and neither of which is a frame bug: `wlan.ssid` comes
+back as **hex of the raw bytes**, and `FT_BOOLEAN` fields come back as
+`True`/`False`, not `1`/`0`.
+
 ## Why the `.mjs` copy exists
 
 Node decides module type from the file extension plus the nearest `package.json`;

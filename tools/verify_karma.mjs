@@ -1,0 +1,301 @@
+#!/usr/bin/env node
+// verify_karma.mjs — pins the Karma and Mana frame building (probe response and
+// beacon), the same way verify_deauth.mjs pins the deauth.
+//
+// The interesting half is again not the field offsets: it is that **tshark**
+// agrees with them. A frame that is self-consistent but mis-encoded is
+// indistinguishable from a correct one until something that did not write it
+// reads it back. So the frames go into a real libpcap and tshark is the judge.
+//
+// Two things here are deliberately stronger than "it decodes":
+//
+//   1. The **shape** checks. A beacon has to look like an AP, not merely parse
+//      like a frame — one Supported Rates IE with eight rates, an RSN IE on a
+//      protected claim and none on an open one, and Privacy agreeing with the
+//      RSN IE. A client that is paying attention rejects a self-contradictory
+//      AP, and "valid" is not the same as "believable".
+//   2. The **scoping** checks. `scopedProbeTargets` answers nothing when the
+//      allowlist is empty, and that is pinned as a hard requirement rather than
+//      left as a default. See the note in attack.js: the thing being scoped is a
+//      rogue AP a stranger's device could join.
+//
+// Run: node tools/verify_karma.mjs
+// Exit 0 = all green.
+
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const work = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'karma-'));
+// attack.js imports nothing and is written as browser ESM, so stage it as .mjs.
+writeFileSync(join(work, 'attack.mjs'), readFileSync(join(here, '..', 'app', 'www', 'js', 'attack.js')));
+const A = await import(join(work, 'attack.mjs'));
+
+const {
+  buildProbeResponse, buildBeacon, buildBeaconPool, scopedProbeTargets,
+  informationElements, capabilityInfo, ssidTag, dsParameterTag, rsnTag,
+  SECURITY, TAG, SUBTYPE_BEACON, SUBTYPE_PROBE_RESPONSE, BROADCAST,
+  DEFAULT_BEACON_INTERVAL, macToBytes, bytesToMac,
+} = A;
+
+const BSSID = 'aa:bb:cc:dd:ee:ff';
+const STA = 'aa:bb:cc:dd:ee:ff';
+const SSID = 'Foo-Cafe';
+
+let failed = 0;
+function check(name, cond, detail = '') {
+  if (!cond) failed++;
+  console.log(`${cond ? 'ok  ' : 'FAIL'}  ${name}${!cond && detail ? '  — ' + detail : ''}`);
+}
+const hex = (b) => Array.from(b).map((x) => x.toString(16).padStart(2, '0')).join(' ');
+const throws = (fn) => { try { fn(); return false; } catch { return true; } };
+
+// ── frame shape, field by field ─────────────────────────────────────────────
+{
+  const f = buildProbeResponse({ ssid: SSID, station: STA, bssid: BSSID, channel: 6 });
+  check('probe response control byte is 0x50 (mgmt, subtype 5)',
+    f[0] === 0x50 && f[1] === 0x00, hex(f.slice(0, 2)));
+  check('subtype nibble is probe response',
+    (f[0] >> 4) === SUBTYPE_PROBE_RESPONSE, (f[0] >> 4).toString(16));
+  check('type nibble is management', ((f[0] >> 2) & 0x3) === 0);
+  check('all DS bits clear (direct frame, not a distribution frame)',
+    (f[1] & 0x03) === 0, (f[1] & 0x03).toString(2));
+  check('addr1 is the station that asked (direct, not broadcast)',
+    bytesToMac(f.slice(4, 10)) === STA, bytesToMac(f.slice(4, 10)));
+  check('addr2 is our BSSID', bytesToMac(f.slice(10, 16)) === BSSID);
+  check('addr3 is our BSSID', bytesToMac(f.slice(16, 22)) === BSSID);
+  check('seq 1 encodes as 0x0010', f[22] === 0x10 && f[23] === 0x00, hex(f.slice(22, 24)));
+  check('total length is header + fixed block + IEs',
+    f.length === 24 + 12 + informationElements({ ssid: SSID, channel: 6 }).length,
+    `${f.length}`);
+
+  const b = buildBeacon({ ssid: SSID, bssid: BSSID, channel: 6 });
+  check('beacon control byte is 0x80 (mgmt, subtype 8)',
+    b[0] === 0x80 && b[1] === 0x00, hex(b.slice(0, 2)));
+  check('subtype nibble is beacon', (b[0] >> 4) === SUBTYPE_BEACON);
+  check('beacon addr1 is broadcast', bytesToMac(b.slice(4, 10)) === BROADCAST,
+    bytesToMac(b.slice(4, 10)));
+  check('beacon addr2/addr3 are our BSSID',
+    bytesToMac(b.slice(10, 16)) === BSSID && bytesToMac(b.slice(16, 22)) === BSSID);
+}
+
+// ── the fixed block ─────────────────────────────────────────────────────────
+{
+  const b = buildBeacon({ ssid: SSID, bssid: BSSID, channel: 6 });
+  const dv = new DataView(b.buffer, b.byteOffset + 24, 12);
+  check('timestamp is 8 bytes and starts at offset 24', dv.getBigUint64(0, true) === 0n);
+  check('beacon interval is little-endian 100 TU',
+    dv.getUint16(8, true) === DEFAULT_BEACON_INTERVAL, String(dv.getUint16(8, true)));
+  check('capability ESS bit is set', (dv.getUint16(10, true) & 0x01) === 1);
+  check('capability Privacy bit is set for a WPA2 claim',
+    (dv.getUint16(10, true) & 0x10) === 0x10);
+  check('capability Privacy bit is clear for an open claim',
+    (capabilityInfo({ security: SECURITY.OPEN }) & 0x10) === 0);
+}
+
+// ── SSID and channel limits ─────────────────────────────────────────────────
+{
+  check('rejects an empty SSID', throws(() => ssidTag('')));
+  check('rejects a non-string SSID', throws(() => ssidTag(42)));
+  check('accepts a 32-byte SSID', ssidTag('x'.repeat(32)).length === 34);
+  check('rejects a 33-byte SSID', throws(() => ssidTag('x'.repeat(33))));
+  // Length is bytes, not characters: 17 x 'é' is 34 bytes and must be refused
+  // even though the string is nowhere near 32 characters long.
+  check('measures the SSID cap in bytes, not characters',
+    throws(() => ssidTag('é'.repeat(17))), '17 chars / 34 bytes was accepted');
+  check('accepts a multi-byte SSID that fits in 32 bytes',
+    ssidTag('é'.repeat(16)).length === 2 + 32);
+  check('rejects channel 0', throws(() => dsParameterTag(0)));
+  check('rejects channel 15', throws(() => dsParameterTag(15)));
+  check('rejects a non-integer channel', throws(() => dsParameterTag(6.5)));
+}
+
+// ── the RSN IE ──────────────────────────────────────────────────────────────
+{
+  const t = rsnTag();
+  check('RSN IE tag id is 48', t[0] === TAG.RSN);
+  check('RSN IE body is 20 bytes', t[1] === 20 && t.length === 22, String(t.length));
+  const body = t.slice(2);
+  check('RSN version is 1', body[0] === 0x01 && body[1] === 0x00);
+  check('group cipher is CCMP (00:0f:ac:04)',
+    hex(body.slice(2, 6)) === '00 0f ac 04', hex(body.slice(2, 6)));
+  check('pairwise count is 1 and the cipher is CCMP',
+    body[6] === 0x01 && body[7] === 0x00 && hex(body.slice(8, 12)) === '00 0f ac 04');
+  check('AKM count is 1 and the AKM is PSK (00:0f:ac:02)',
+    body[12] === 0x01 && body[13] === 0x00 && hex(body.slice(14, 18)) === '00 0f ac 02');
+  check('RSN capabilities are zero', body[18] === 0x00 && body[19] === 0x00);
+}
+
+// ── the beacon pool ─────────────────────────────────────────────────────────
+{
+  const ssids = ['One', 'Two', 'Three'];
+  const pool = buildBeaconPool({ ssids, bssid: BSSID, channel: 6 });
+  check('pool emits one beacon per name', pool.length === 3, String(pool.length));
+  check('every pool frame is a beacon', pool.every((f) => (f[0] >> 4) === SUBTYPE_BEACON));
+  check('the sequence number steps across the pool',
+    pool[0][22] === 0x10 && pool[1][22] === 0x20 && pool[2][22] === 0x30,
+    pool.map((f) => f[22].toString(16)).join(' '));
+  check('the fragment nibble stays zero across the pool',
+    pool.every((f) => (f[22] & 0x0f) === 0));
+  check('the SSIDs differ frame to frame',
+    new Set(pool.map((f) => Buffer.from(f).toString('hex'))).size === 3);
+  check('rejects an empty pool', throws(() => buildBeaconPool({ ssids: [], bssid: BSSID })));
+  check('rejects a pool above the cap',
+    throws(() => buildBeaconPool({ ssids: Array(65).fill('x'), bssid: BSSID })));
+}
+
+// ── the scoping gate: default closed ────────────────────────────────────────
+{
+  const probes = [
+    { ssid: 'Foo-Cafe', stations: [STA] },
+    { ssid: 'Neighbour', stations: ['aa:bb:cc:dd:ee:01'] },
+    { ssid: 'Foo-Cafe', stations: [STA] },                       // duplicate
+    { ssid: 'Foo-Cafe', stations: ['ff:ff:ff:ff:ff:ff'] },       // group address
+    { ssid: 'Foo-Cafe', stations: ['01:00:5e:00:00:01'] },       // multicast
+    { ssid: 'Silent', stations: [] },                            // nobody to answer
+    { ssid: 'Foo-Cafe', stations: ['not-a-mac'] },               // junk upstream
+  ];
+
+  check('an empty allowlist answers nothing', scopedProbeTargets(probes, { allowlist: [] }).length === 0);
+  check('a missing allowlist answers nothing', scopedProbeTargets(probes, {}).length === 0);
+  check('a non-array allowlist answers nothing', scopedProbeTargets(probes, { allowlist: 'all' }).length === 0);
+
+  const one = scopedProbeTargets(probes, { allowlist: ['Foo-Cafe'] });
+  check('an allowlisted name produces exactly one target per station',
+    one.length === 1, JSON.stringify(one));
+  check('the target carries the station, not the BSSID', one[0].station === STA, one[0].station);
+  check('the group address is never answered — multicast has no listener',
+    one.every((t) => (macToBytes(t.station)[0] & 0x01) === 0));
+  check('the duplicate probe is not answered twice',
+    scopedProbeTargets([{ ssid: 'A', stations: [STA] }, { ssid: 'A', stations: [STA] }],
+      { allowlist: ['A'] }).length === 1);
+  check('a non-allowlisted name is never answered',
+    scopedProbeTargets(probes, { allowlist: ['Neighbour'] }).length === 1);
+  check('an SSID is matched exactly, not as a substring',
+    scopedProbeTargets(probes, { allowlist: ['Foo'] }).length === 0);
+  check('a non-array probes value is not a crash', scopedProbeTargets(null, { allowlist: ['x'] }).length === 0);
+
+  // End to end through the frame builder: every target becomes a real frame.
+  const frames = one.map((t) => buildProbeResponse({ ssid: t.ssid, station: t.station, bssid: BSSID, channel: 6 }));
+  check('each scoped target builds a probe response',
+    frames.length === 1 && (frames[0][0] >> 4) === SUBTYPE_PROBE_RESPONSE);
+}
+
+// ── tshark is the judge ─────────────────────────────────────────────────────
+function pcap(frames) {
+  const head = Buffer.alloc(24);
+  head.writeUInt32LE(0xa1b2c3d4, 0); head.writeUInt16LE(2, 4); head.writeUInt16LE(4, 6);
+  head.writeUInt32LE(0, 8); head.writeUInt32LE(0, 12); head.writeUInt32LE(65535, 16);
+  head.writeUInt32LE(105, 20);                 // LINKTYPE_IEEE802_11
+  const parts = [head];
+  frames.forEach((f, i) => {
+    const r = Buffer.alloc(16);
+    r.writeUInt32LE(1700000000 + i, 0); r.writeUInt32LE(0, 4);
+    r.writeUInt32LE(f.length, 8); r.writeUInt32LE(f.length, 12);
+    parts.push(r, Buffer.from(f));
+  });
+  return Buffer.concat(parts);
+}
+
+function tsharkFields(path, ...fields) {
+  const args = ['-r', path, '-T', 'fields'];
+  for (const f of fields) args.push('-e', f);
+  return execFileSync('tshark', args, { encoding: 'utf8' })
+    .trim().split('\n').filter(Boolean)
+    .map((r) => r.split('\t'));
+}
+
+let haveTshark = true;
+try { execFileSync('tshark', ['--version'], { stdio: 'ignore' }); } catch { haveTshark = false; }
+check('tshark is available for the cross-check', haveTshark);
+
+// Two output-format traps in `tshark -T fields`, both of which made this test
+// fail the first time it ran — which is the only reason they are noted:
+//
+//   * `wlan.ssid` comes back as HEX of the raw bytes, not the text.
+//   * FT_BOOLEAN fields come back as `True`/`False`, not `1`/`0`.
+//
+// Neither is a frame bug, and both would read as one if the checks had been
+// written loosely enough to pass. Decode explicitly.
+const unhex = (s) => Buffer.from(s || '', 'hex').toString('utf8');
+
+if (haveTshark) {
+  const pr = buildProbeResponse({ ssid: SSID, station: STA, bssid: BSSID, channel: 6 });
+  const bcW = buildBeacon({ ssid: SSID, bssid: BSSID, channel: 11 });
+  const bcO = buildBeacon({ ssid: 'Open-Guest', bssid: BSSID, channel: 1, security: SECURITY.OPEN });
+  const path = join(work, 'karma.pcap');
+  writeFileSync(path, pcap([pr, bcW, bcO]));
+
+  const rows = tsharkFields(path,
+    'wlan.fc.type_subtype', 'wlan.da', 'wlan.ta', 'wlan.bssid', 'wlan.ssid',
+    'wlan.fixed.beacon', 'wlan.fixed.capabilities.ess', 'wlan.fixed.capabilities.privacy',
+    'wlan.rsn.version', 'wlan.rsn.gcs.type', 'wlan.rsn.pcs.type', 'wlan.rsn.akms.type',
+    'wlan.ds.current_channel', 'wlan.tag.number');
+  check('tshark reads all 3 frames', rows.length === 3, String(rows.length));
+
+  const [p, w, o] = rows;
+  check('tshark decodes frame 1 as a probe response (0x0005), not something else',
+    p[0] === '0x0005', p[0]);
+  check('tshark decodes frames 2 and 3 as beacons (0x0008)',
+    w[0] === '0x0008' && o[0] === '0x0008', `${w[0]} ${o[0]}`);
+  check('tshark reads the probe response destination as the station that asked',
+    p[1] === STA, p[1]);
+  check('tshark reads both beacons as broadcast', w[1] === BROADCAST && o[1] === BROADCAST);
+  check('tshark agrees the transmitter is our BSSID on all three',
+    p[2] === BSSID && w[2] === BSSID && o[2] === BSSID, p[2]);
+  check('tshark agrees addr3 (bssid) is ours on all three',
+    p[3] === BSSID && w[3] === BSSID && o[3] === BSSID, p[3]);
+  check('tshark reads the SSID we claimed',
+    unhex(p[4]) === SSID && unhex(w[4]) === SSID, `${p[4]} ${w[4]}`);
+  check('tshark reads the open beacon\'s different SSID', unhex(o[4]) === 'Open-Guest', o[4]);
+  check('tshark reads the beacon interval as 100 TU',
+    w[5] === String(DEFAULT_BEACON_INTERVAL), w[5]);
+  check('tshark reads ESS on all three',
+    p[6] === 'True' && w[6] === 'True' && o[6] === 'True', `${p[6]} ${w[6]} ${o[6]}`);
+  check('tshark reads Privacy SET on the WPA2 claim',
+    p[7] === 'True' && w[7] === 'True', `${p[7]} ${w[7]}`);
+  check('tshark reads Privacy CLEAR on the open claim', o[7] === 'False', o[7]);
+  check('tshark decodes the RSN IE we wrote', p[8] === '1' && w[8] === '1', `${p[8]} ${w[8]}`);
+  check('tshark reads the group cipher as CCMP (4)', p[9] === '4', p[9]);
+  check('tshark reads the pairwise cipher as CCMP (4)', p[10] === '4', p[10]);
+  check('tshark reads the AKM as PSK (2)', p[11] === '2', p[11]);
+  check('tshark reads the DS channel we set (6 and 11), not a default',
+    p[12] === '6' && w[12] === '11', `${p[12]} ${w[12]}`);
+  check('tshark reads the open beacon channel (1)', o[12] === '1', o[12]);
+
+  // ── shape: an AP, not just a parseable frame ──────────────────────────────
+  const tags = (row) => row[13].split(',').map((x) => Number(x));
+  check('the probe response carries exactly one Supported Rates IE',
+    tags(p).filter((t) => t === TAG.SUPPORTED_RATES).length === 1,
+    tags(p).join(','));
+  check('the probe response tag set is exactly SSID, Rates, ExtRates, RSN, DS',
+    JSON.stringify(tags(p)) === JSON.stringify(
+      [TAG.SSID, TAG.SUPPORTED_RATES, TAG.EXT_SUPPORTED_RATES, TAG.RSN, TAG.DS_PARAMETER]),
+    tags(p).join(','));
+  check('the open beacon carries NO RSN IE — open means open',
+    !tags(o).includes(TAG.RSN), tags(o).join(','));
+  check('the open beacon tag set drops only the RSN IE',
+    JSON.stringify(tags(o)) === JSON.stringify(
+      [TAG.SSID, TAG.SUPPORTED_RATES, TAG.EXT_SUPPORTED_RATES, TAG.DS_PARAMETER]),
+    tags(o).join(','));
+
+  // The counterexample, kept so the guard cannot be quietly removed: a WPA2 RSN
+  // IE with the Privacy bit cleared is an AP claiming to be encrypted and open
+  // at the same time. Real clients disagree about which to believe.
+  const contradict = buildBeacon({ ssid: SSID, bssid: BSSID, channel: 6, security: SECURITY.WPA2 });
+  const dv = new DataView(contradict.buffer, contradict.byteOffset + 24, 12);
+  dv.setUint16(10, dv.getUint16(10, true) & ~0x10, true);      // clear Privacy
+  const badPath = join(work, 'contradict.pcap');
+  writeFileSync(badPath, pcap([contradict]));
+  const bad = tsharkFields(badPath, 'wlan.fixed.capabilities.privacy', 'wlan.rsn.version')[0];
+  check('tshark confirms the contradiction is real (RSN present, Privacy clear)',
+    bad[0] === 'False' && bad[1] === '1', bad.join(' / '));
+}
+
+rmSync(work, { recursive: true, force: true });
+
+console.log(failed ? `\n${failed} check(s) FAILED` : '\nall checks passed');
+process.exit(failed ? 1 : 0);
