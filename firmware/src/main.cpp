@@ -326,7 +326,7 @@ static void rx_append(const uint8_t* data, size_t len) {
 // Listen on BOTH S3 serial ports, because which one the phone lands on depends
 // on the socket and the board. Reply on the port the command came from.
 //
-//   Serial   native USB (USB-Serial/JTAG) — the "USB" socket, 303A:1001
+//   Serial   native USB (TinyUSB CDC) — the "USB" socket, 303A:1001
 //   Serial0  UART0 GPIO43/44 — the "COM/UART" socket, behind a CH34x/CP210x bridge
 static void serial_dispatch(const uint8_t* payload, size_t len, uint8_t id,
                             SerialChannelBase* from) {
@@ -334,7 +334,7 @@ static void serial_dispatch(const uint8_t* payload, size_t len, uint8_t id,
     dispatch(payload, len, id);
 }
 
-// Explicit template args: Serial is HWCDC/USBCDC, Serial0 is HardwareSerial.
+// Explicit template args: Serial is USBCDC (TinyUSB), Serial0 is HardwareSerial.
 static SerialChannel<decltype(Serial)>  ch_usb(Serial,  "usb_cdc", serial_dispatch);
 static SerialChannel<decltype(Serial0)> ch_uart(Serial0, "uart0",  serial_dispatch);
 

@@ -9,14 +9,14 @@
 //
 // THE S3 HAS TWO SERIAL PORTS AND THE PHONE CAN LAND ON EITHER:
 //
-//   Serial   native USB (USB-Serial/JTAG), the "USB" socket   -> 303A:1001
+//   Serial   native USB (TinyUSB CDC), the "USB" socket   -> 303A:1001
 //   Serial0  UART0 GPIO43/44, the "COM/UART" socket, bridged -> CH34x / CP210x
 //
 // Which one the phone gets depends on the socket and the board. Rather than
 // guess, the firmware listens on BOTH and replies on whichever port the command
 // arrived on. One SerialChannel instance per port.
 //
-// WHY A TEMPLATE: Serial is HWCDC/USBCDC and Serial0 is HardwareSerial. They are
+// WHY A TEMPLATE: Serial is USBCDC (TinyUSB) and Serial0 is HardwareSerial. They are
 // unrelated types that share only Stream, and Stream has neither begin() nor a
 // buffered read(). Templating on the concrete port type keeps both, while the
 // non-template base lets a single SerialChannelBase* be the active reply target.

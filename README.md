@@ -95,17 +95,21 @@ Two transports, same framing, so the app does not care which is up:
 
 - **USB serial (primary)** — `src/serial_transport.h` listens on **both** S3 serial ports
   and replies on whichever the command arrived on: `Serial` is the native USB port
-  (USB-Serial/JTAG, `303A:1001`), `Serial0` is UART0 behind the board's CH34x/CP210x
+  (TinyUSB CDC, `303A:1001`), `Serial0` is UART0 behind the board's CH34x/CP210x
   bridge (`1A86:55D3` here). Which one the phone lands on depends on the socket.
 - **BLE GATT (fallback)** — for the cableless mode, with MTU chunking.
 
 Debug output is on `SRC_DEBUG` and **off by default**: the ports carry frames, so a stray
 `printf` corrupts the stream.
 
-USB is deliberately **CDC-only** (`ARDUINO_USB_MODE=0`). A TinyUSB composite (CDC + HID +
-MSC) makes Android offer to mount the storage function and complicates the USB permission
-flow the app depends on. BadUSB/HID needs a separate build env — see the note in
-`platformio.ini`.
+USB is **USB-OTG/TinyUSB** and deliberately **CDC-only**. Watch the flag: the core's
+`ARDUINO_USB_MODE` is inverted from its name — `1` is the hardware USB-Serial/JTAG CDC,
+`0` is TinyUSB. We set `0`, which is what NRSuite uses and what its Android app is proven
+against. Only CDC is enabled on boot; a composite (CDC + HID + MSC) makes Android offer to
+mount the storage function and complicates the USB permission flow. TinyUSB is also the
+mode BadUSB/HID will need later. One caveat: in this mode esptool **cannot auto-reset over
+the native USB port** — flash over the UART bridge (as this project does), or hold BOOT and
+tap RESET.
 
 ## App
 
