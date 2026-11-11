@@ -407,6 +407,7 @@ async function onCaptureSave() {
 // down, so there is no device round-trip and no way for it to disturb the radio.
 let analyzeResult = null;
 let analysisPlan = null;
+let selectedTargetIndex = null;  // which target the operator picked in Analysis
 
 function renderAnalyzePanel(box) {
   const w = capture.writer;
@@ -627,7 +628,7 @@ function analysisPlanHtml(p) {
   // nothing untrusted is interpolated raw.
   const s = p.summary;
 
-  const targetHtml = p.targets.map((t) => {
+  const targetHtml = p.targets.map((t, idx) => {
     const reasons = t.reasons.map((r) => `
       <li class="${r.points ? '' : 'zero'}">
         <span class="rp ${r.points > 0 ? 'up' : r.points < 0 ? 'down' : ''}">${r.points > 0 ? '+' : ''}${r.points}</span>
@@ -635,7 +636,8 @@ function analysisPlanHtml(p) {
       </li>`).join('');
 
     return `
-      <div class="target ${escapeHtml(t.level)}">
+      <div class="target ${escapeHtml(t.level)}${selectedTargetIndex === idx ? ' picked' : ''}" data-idx="${idx}">
+        <button class="pick-target" data-idx="${idx}">${selectedTargetIndex === idx ? Icon('check', { size: 16 }) + 'Picked' : 'Pick'}</button>
         <div class="thead">
           <div class="trank">${t.rank ? '#' + t.rank : '—'}</div>
           <div class="tmain">
@@ -732,8 +734,13 @@ function bridgeClient() {
 
 /** Everything the attack list needs to judge readiness. */
 function attackContext() {
+  const captured = !!capture?.writer?.chunks?.length;
+  // If an analysis plan exists, the captured data is real — the plan was built
+  // from it. Fall back to the plan as proof capture ran, in case the writer
+  // reference was cleared by a re-render or navigation.
+  const hasCaptureProof = captured || (analysisPlan && analysisPlan.targets.length > 0);
   return {
-    hasCapture: !!capture?.writer?.chunks?.length,
+    hasCapture: hasCaptureProof,
     hasHandshake: !!handshakeResult?.handshakes?.length,
     canTransmit: FIRMWARE_CAN_TRANSMIT,
     bridgeReachable: !!bridgeStatus?.ok,
@@ -829,6 +836,11 @@ function renderAttackPanel(box) {
   $('#crackExtract')?.addEventListener('click', onExtractHandshakes);
   $('#crackRun')?.addEventListener('click', onCrackRun);
   $('#deauthGo')?.addEventListener('click', onDeauthCapture);
+  // Target pick buttons use event delegation — they're rendered dynamically
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.pick-target');
+    if (btn) onPickTarget({ currentTarget: btn });
+  });
   $('#deauthStop')?.addEventListener('click', onDeauthStop);
   $('#karmaGo')?.addEventListener('click', onKarmaStart);
   $('#karmaStop')?.addEventListener('click', onKarmaStop);
@@ -975,7 +987,9 @@ function crackActionHtml(a) {
 function deauthActionHtml(a) {
   if (!a.ready) return '';
 
-  const t = analysisPlan ? topTarget(analysisPlan) : null;
+  const t = (analysisPlan && selectedTargetIndex != null)
+    ? analysisPlan.targets[selectedTargetIndex]
+    : (analysisPlan ? topTarget(analysisPlan) : null);
   if (!t) {
     return `<div class="crackbox">
       <div class="crackstate">no target chosen</div>
@@ -1164,6 +1178,17 @@ function manaActionHtml(a) {
 /** Turn a frame's bytes into the hex TX_FRAME expects. */
 function frameHex(u8) {
   return Array.from(u8).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function onPickTarget(e) {
+  const idx = parseInt(e.currentTarget.dataset.idx, 10);
+  if (!isNaN(idx)) {
+    selectedTargetIndex = idx;
+    renderStagePanel();
+    // Scroll to the Attack step so the operator sees the result
+    const step = document.querySelector('.step-attack');
+    step?.scrollIntoView?.({ behavior: 'smooth' });
+  }
 }
 
 async function onDeauthCapture() {
