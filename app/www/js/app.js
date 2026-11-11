@@ -711,6 +711,7 @@ function analysisPlanHtml(p) {
 const FIRMWARE_CAN_TRANSMIT = true;
 
 const BRIDGE_DEFAULT_URL = 'http://192.168.1.169:8099';
+const BRIDGE_DEFAULT_TOKEN = 'jUsaQB4TFRLVeo977u3XyxgZskrov8GN';
 
 let handshakeResult = null;   // crack extraction over the current capture
 let bridgeStatus = null;      // last /health reading, null until tested
@@ -727,7 +728,7 @@ let manaResult = null;
 function bridgeConfig() {
   return {
     url: localStorage.getItem('bridgeUrl') || BRIDGE_DEFAULT_URL,
-    token: localStorage.getItem('bridgeToken') || '',
+    token: localStorage.getItem('bridgeToken') || BRIDGE_DEFAULT_TOKEN,
   };
 }
 
