@@ -11,7 +11,7 @@ import { CaptureSession } from './capture.js';
 import { analyzeChunks, findings } from './analyze.js';
 import { plan, reportText, topTarget } from './analysis.js';
 import { attackList, blockedOnTransmit } from './attacks.js';
-import { buildDeauth } from './attack.js';
+import { buildDeauth, buildProbeResponse, buildBeaconPool, SECURITY } from './attack.js';
 import { extractHandshakes, hashFile } from './crack.js';
 import { CrackBridge } from './bridge.js';
 
@@ -713,6 +713,10 @@ let crackJob = null;          // live progress: {state, progress, speed_hs, ...}
 let crackRunning = false;
 let txResult = null;          // last burst: {phase, requested, sent, failed, ...}
 let txRunning = false;
+let karmaRunning = false;
+let karmaResult = null;
+let manaRunning = false;
+let manaResult = null;
 
 function bridgeConfig() {
   return {
@@ -766,6 +770,8 @@ function renderAttackPanel(box) {
       ${blockers ? `<ul class="blockers">${blockers}</ul>` : ''}
       ${a.id === 'crack' ? crackActionHtml(a) : ''}
       ${a.id === 'handshake' ? deauthActionHtml(a) : ''}
+      ${a.id === 'karma' ? karmaActionHtml(a) : ''}
+      ${a.id === 'mana' ? manaActionHtml(a) : ''}
     </div>`;
   }).join('');
 
@@ -824,6 +830,12 @@ function renderAttackPanel(box) {
   $('#crackRun')?.addEventListener('click', onCrackRun);
   $('#deauthGo')?.addEventListener('click', onDeauthCapture);
   $('#deauthStop')?.addEventListener('click', onDeauthStop);
+  $('#karmaGo')?.addEventListener('click', onKarmaStart);
+  $('#karmaStop')?.addEventListener('click', onKarmaStop);
+  $('#karmaRefresh')?.addEventListener('click', pollKarmaStatus);
+  $('#manaGo')?.addEventListener('click', onManaStart);
+  $('#manaStop')?.addEventListener('click', onManaStop);
+  $('#manaRefresh')?.addEventListener('click', pollManaStatus);
 }
 
 function bridgeStateHtml() {
@@ -995,6 +1007,140 @@ function deauthActionHtml(a) {
       rejoin. This puts frames on the air — only run it against a network you are allowed to test.</div>
     <div class="row" style="margin-top:8px">
       <button id="deauthGo" class="primary">${Icon('capture', { size: 18 })}Fire the burst</button>
+    </div>
+  </div>`;
+}
+
+
+/** Karma (Probe Reply) controls. Channels the probe-response template through
+ *  the bridge. The app builds the full frame once; the firmware hot-swaps the
+ *  SSID before transmitting. */
+function karmaActionHtml(a) {
+  if (!a.ready) return '';
+
+  const dev = state.deviceInfo;
+  const bssid = dev?.bssid || 'aa:bb:cc:dd:ee:ff';
+  const allowlistSaved = localStorage.getItem('karmaAllowlist') || '';
+  const channelSaved = localStorage.getItem('karmaChannel') || '6';
+  const modeSaved = localStorage.getItem('karmaMode') || 'allowlist';
+
+  if (karmaRunning) {
+    const r = karmaResult || {};
+    return `<div class="crackbox">
+      <div class="crackstate">${Icon('antenna', { size: 15 })}Karma running</div>
+      <div class="crackmeta">channel ${r.channel || '?'} · mode ${escapeHtml(String(r.mode || '?'))}
+        · matched ${r.matched ?? 0} · sent ${r.sent ?? 0}${r.failed ? ' · failed ' + r.failed : ''}</div>
+      <div class="row" style="margin-top:8px">
+        <button id="karmaStop" class="ghost">${Icon('unlink', { size: 18 })}Stop</button>
+        <button id="karmaRefresh" class="ghost" style="margin-left:0">${Icon('refresh', { size: 15 })}</button>
+      </div>
+    </div>`;
+  }
+
+  if (karmaResult) {
+    const r = karmaResult;
+    const ok = r.sent > 0;
+    return `<div class="crackbox ${ok ? 'win' : ''}">
+      <div class="crackstate">${ok ? Icon('check', { size: 15 }) + 'Karma complete' : Icon('alert', { size: 15 }) + 'no probes answered'}</div>
+      <div class="crackmeta">${r.matched} probes matched · ${r.sent} sent · ${r.failed} failed
+        · channel ${r.channel} · ${r.elapsed_ms}ms</div>
+      ${r.note ? `<div class="crackmeta">${escapeHtml(r.note)}</div>` : ''}
+      <div class="row" style="margin-top:8px">
+        <button id="karmaGo" class="ghost">${Icon('refresh', { size: 18 })}Run again</button>
+      </div>
+    </div>`;
+  }
+
+  return `<div class="crackbox">
+    <div class="crackmeta">Answers probe requests on the named channel. The firmware swaps the
+      requested SSID into a pre-built template — the radio never builds a frame, only the phone
+      does. Every probe request that matches gets a response.</div>
+    <div class="fields">
+      <label class="field">
+        <span>Channel</span>
+        <input id="karmaCh" type="number" value="${escapeHtml(channelSaved)}" min="1" max="14" style="width:3rem">
+      </label>
+      <label class="field">
+        <span>Mode</span>
+        <select id="karmaModeSel">
+          <option value="allowlist" ${modeSaved === 'allowlist' ? 'selected' : ''}>Answer only listed names</option>
+          <option value="lab-any" ${modeSaved === 'lab-any' ? 'selected' : ''}>lab-any (answer everything)</option>
+        </select>
+      </label>
+    </div>
+    <label class="field">
+      <span>SSIDs to answer (one per line)</span>
+      <textarea id="karmaList" rows="4" autocapitalize="off" spellcheck="false"
+        placeholder="NETGEAR&#10;xfinitywifi&#10;attwifi">${escapeHtml(allowlistSaved)}</textarea>
+    </label>
+    <div class="crackmeta">Firmware BSSID: <code>${escapeHtml(bssid)}</code> · template ~400 bytes · hard cap 120 s</div>
+    <div class="row" style="margin-top:8px">
+      <button id="karmaGo" class="primary">${Icon('capture', { size: 18 })}Start Karma</button>
+    </div>
+  </div>`;
+}
+
+/** Mana (Beacon Pool) controls. The app builds one beacon per SSID; the
+ *  firmware rotates through them from loop(). Broadcast, not unicast, so an
+ *  independent receiver sees every one. */
+function manaActionHtml(a) {
+  if (!a.ready) return '';
+
+  const dev = state.deviceInfo;
+  const bssid = dev?.bssid || 'aa:bb:cc:dd:ee:ff';
+  const ssidsSaved = localStorage.getItem('manaSSIDs') || '';
+  const channelSaved = localStorage.getItem('manaChannel') || '6';
+  const intervalSaved = localStorage.getItem('manaInterval') || '110';
+
+  if (manaRunning) {
+    const r = manaResult || {};
+    return `<div class="crackbox">
+      <div class="crackstate">${Icon('antenna', { size: 15 })}Mana running</div>
+      <div class="crackmeta">pool ${r.pool_size ?? '?'} · sent ${r.sent ?? 0}
+        ${r.failed ? ' · failed ' + r.failed : ''} · channel ${r.channel || '?'}</div>
+      <div class="row" style="margin-top:8px">
+        <button id="manaStop" class="ghost">${Icon('unlink', { size: 18 })}Stop</button>
+        <button id="manaRefresh" class="ghost" style="margin-left:0">${Icon('refresh', { size: 15 })}</button>
+      </div>
+    </div>`;
+  }
+
+  if (manaResult) {
+    const r = manaResult;
+    const ok = r.sent > 0;
+    return `<div class="crackbox ${ok ? 'win' : ''}">
+      <div class="crackstate">${ok ? Icon('check', { size: 15 }) + 'Mana complete' : Icon('alert', { size: 15 }) + 'nothing sent'}</div>
+      <div class="crackmeta">${r.sent} beacons sent · ${r.failed} failed
+        · pool ${r.pool_size} · channel ${r.channel} · ${r.elapsed_ms}ms</div>
+      ${r.note ? `<div class="crackmeta">${escapeHtml(r.note)}</div>` : ''}
+      <div class="row" style="margin-top:8px">
+        <button id="manaGo" class="ghost">${Icon('refresh', { size: 18 })}Run again</button>
+      </div>
+    </div>`;
+  }
+
+  return `<div class="crackbox">
+    <div class="crackmeta">Rotates a pool of pre-built beacons on the named channel. Each beacon
+      claims a different SSID — the firmware rotates through them so nearby devices see every
+      name. The SSID is in clear text; the WPA2 RSN IE is pre-built.</div>
+    <div class="fields">
+      <label class="field">
+        <span>Channel</span>
+        <input id="manaCh" type="number" value="${escapeHtml(channelSaved)}" min="1" max="14" style="width:3rem">
+      </label>
+      <label class="field">
+        <span>Interval (ms per beacon)</span>
+        <input id="manaIntv" type="number" value="${escapeHtml(intervalSaved)}" min="50" max="5000" style="width:4rem">
+      </label>
+    </div>
+    <label class="field">
+      <span>SSIDs (one per line)</span>
+      <textarea id="manaList" rows="4" autocapitalize="off" spellcheck="false"
+        placeholder="NETGEAR&#10;xfinitywifi&#10;attwifi">${escapeHtml(ssidsSaved)}</textarea>
+    </label>
+    <div class="crackmeta">Firmware BSSID: <code>${escapeHtml(bssid)}</code> · ~400 bytes per beacon · hard cap 120 s</div>
+    <div class="row" style="margin-top:8px">
+      <button id="manaGo" class="primary">${Icon('capture', { size: 18 })}Start Mana</button>
     </div>
   </div>`;
 }
@@ -1190,3 +1336,242 @@ function boot() {
 }
 
 document.addEventListener('DOMContentLoaded', boot);
+
+
+// ── Karma handlers ──────────────────────────────────────────────────────────
+
+/** Build the Karma template and start probe_reply on the board. The template
+ *  uses a 32-byte sentinel SSID; the firmware memcpy-swaps the real SSID on
+ *  each answer. kssid_offset is fixed at 38 for our template layout. */
+async function onKarmaStart() {
+  const chEl = $('#karmaCh');
+  const listEl = $('#karmaList');
+  const modeEl = $('#karmaModeSel');
+  const channel = parseInt(chEl?.value || '6', 10);
+  const ssids = (listEl?.value || '').split(/[\n]+/).map(s => s.trim()).filter(Boolean);
+  const mode = modeEl?.value || 'allowlist';
+
+  localStorage.setItem('karmaChannel', String(channel));
+  localStorage.setItem('karmaAllowlist', listEl?.value || '');
+  localStorage.setItem('karmaMode', mode);
+
+  if (ssids.length === 0 && mode !== 'lab-any') {
+    log('err', 'karma: need at least one SSID for allowlist mode');
+    return;
+  }
+
+  const dev = state.deviceInfo;
+  const bssid = dev?.bssid || 'aa:bb:cc:dd:ee:ff';
+  const sentinel = 'X'.repeat(32);
+
+  let template;
+  try {
+    template = buildProbeResponse({
+      ssid: sentinel,
+      station: 'ff:ff:ff:ff:ff:ff',  // placeholder — firmware overwrites addr1
+      bssid,
+      channel,
+      security: SECURITY.WPA2,
+    });
+  } catch (e) {
+    log('err', 'karma: could not build the template — ' + e.message);
+    return;
+  }
+
+  const templateHex = Array.from(template).map(b => b.toString(16).padStart(2, '0')).join('');
+  const kssidOffset = 38;
+  const kssidMaxlen = 32;
+
+  karmaRunning = true;
+  karmaResult = { phase: 'starting', channel, mode, matched: 0, sent: 0, failed: 0 };
+  renderStagePanel();
+
+  try {
+    const resp = await request('PROBE_REPLY_START', {
+      channel,
+      template_hex: templateHex,
+      kssid_offset: kssidOffset,
+      kssid_maxlen: kssidMaxlen,
+      allowlist: ssids,
+      mode,
+    }, { timeoutMs: 10000 });
+
+    if (!resp?.ok) throw new Error(resp?.error || 'the firmware refused');
+
+    karmaResult = {
+      ...karmaResult,
+      started: resp.started,
+      mode: resp.mode,
+      allowlist_n: resp.allowlist_n,
+    };
+    log('ev', `karma: started on ch${channel}, mode=${mode}, ${ssids.length} name(s)`);
+    renderStagePanel();
+
+    // Poll status until it stops (hard cap ~120s, or user stops)
+    pollKarmaStatus();
+  } catch (e) {
+    karmaResult = { ...karmaResult, note: e.message };
+    log('err', 'karma start: ' + e.message);
+    karmaRunning = false;
+    renderStagePanel();
+  }
+}
+
+async function pollKarmaStatus() {
+  if (!karmaRunning) return;
+  try {
+    const st = await request('PROBE_REPLY_STATUS', {}, { timeoutMs: 5000 });
+    karmaResult = {
+      ...karmaResult,
+      matched: st?.matched ?? 0,
+      sent: st?.sent ?? 0,
+      failed: st?.failed ?? 0,
+      mode: st?.mode || karmaResult.mode,
+      channel: st?.channel || karmaResult.channel,
+      elapsed_ms: st?.elapsed_ms || 0,
+    };
+    if (!st?.running) {
+      karmaRunning = false;
+      log('ev', `karma: finished — ${st?.matched ?? 0} matched, ${st?.sent ?? 0} sent`);
+    }
+    renderStagePanel();
+    if (karmaRunning) setTimeout(pollKarmaStatus, 1500);
+  } catch (e) {
+    log('err', 'karma poll: ' + e.message);
+    if (karmaRunning) setTimeout(pollKarmaStatus, 3000);
+  }
+}
+
+async function onKarmaStop() {
+  try {
+    const st = await request('PROBE_REPLY_STOP', {}, { timeoutMs: 5000 });
+    karmaRunning = false;
+    karmaResult = {
+      ...(karmaResult || {}),
+      matched: st?.matched ?? 0,
+      sent: st?.sent ?? 0,
+      failed: st?.failed ?? 0,
+      channel: st?.channel || karmaResult?.channel,
+      elapsed_ms: st?.elapsed_ms || 0,
+    };
+    log('ev', `karma: stopped — ${st?.matched ?? 0} matched, ${st?.sent ?? 0} sent`);
+    renderStagePanel();
+  } catch (e) {
+    log('err', 'karma stop: ' + e.message);
+    karmaRunning = false;
+    karmaResult = { ...(karmaResult || {}), note: e.message };
+    renderStagePanel();
+  }
+}
+
+// ── Mana handlers ───────────────────────────────────────────────────────────
+
+/** Build a beacon pool from the user's SSID list and send it to the firmware. */
+async function onManaStart() {
+  const chEl = $('#manaCh');
+  const listEl = $('#manaList');
+  const intvEl = $('#manaIntv');
+  const channel = parseInt(chEl?.value || '6', 10);
+  const ssids = (listEl?.value || '').split(/[\n]+/).map(s => s.trim()).filter(Boolean);
+  const interval = Math.max(50, parseInt(intvEl?.value || '110', 10));
+
+  localStorage.setItem('manaChannel', String(channel));
+  localStorage.setItem('manaSSIDs', listEl?.value || '');
+  localStorage.setItem('manaInterval', String(interval));
+
+  if (ssids.length === 0) {
+    log('err', 'mana: need at least one SSID');
+    return;
+  }
+
+  const dev = state.deviceInfo;
+  const bssid = dev?.bssid || 'aa:bb:cc:dd:ee:ff';
+
+  let frames;
+  try {
+    frames = buildBeaconPool({
+      ssids, bssid, channel, security: SECURITY.WPA2,
+    });
+  } catch (e) {
+    log('err', 'mana: could not build the pool — ' + e.message);
+    return;
+  }
+
+  const beacons = frames.map(f => ({
+    hex: Array.from(f).map(b => b.toString(16).padStart(2, '0')).join(''),
+    interval_ms: interval,
+  }));
+
+  manaRunning = true;
+  manaResult = { phase: 'starting', channel, pool_size: beacons.length, sent: 0, failed: 0 };
+  renderStagePanel();
+
+  try {
+    const resp = await request('BEACON_POOL_START', {
+      channel,
+      beacons,
+    }, { timeoutMs: 10000 });
+
+    if (!resp?.ok) throw new Error(resp?.error || 'the firmware refused');
+
+    manaResult = {
+      ...manaResult,
+      started: resp.started,
+      pool_size: resp.pool_size,
+    };
+    log('ev', `mana: started on ch${channel}, ${beacons.length} beacon(s), ${interval}ms interval`);
+    renderStagePanel();
+
+    pollManaStatus();
+  } catch (e) {
+    manaResult = { ...manaResult, note: e.message };
+    log('err', 'mana start: ' + e.message);
+    manaRunning = false;
+    renderStagePanel();
+  }
+}
+
+async function pollManaStatus() {
+  if (!manaRunning) return;
+  try {
+    const st = await request('BEACON_POOL_STATUS', {}, { timeoutMs: 5000 });
+    manaResult = {
+      ...manaResult,
+      sent: st?.sent ?? 0,
+      failed: st?.failed ?? 0,
+      pool_size: st?.pool_size || manaResult.pool_size,
+      channel: st?.channel || manaResult.channel,
+      elapsed_ms: st?.elapsed_ms || 0,
+    };
+    if (!st?.running) {
+      manaRunning = false;
+      log('ev', `mana: finished — ${st?.sent ?? 0} sent, ${st?.failed ?? 0} failed`);
+    }
+    renderStagePanel();
+    if (manaRunning) setTimeout(pollManaStatus, 1500);
+  } catch (e) {
+    log('err', 'mana poll: ' + e.message);
+    if (manaRunning) setTimeout(pollManaStatus, 3000);
+  }
+}
+
+async function onManaStop() {
+  try {
+    const st = await request('BEACON_POOL_STOP', {}, { timeoutMs: 5000 });
+    manaRunning = false;
+    manaResult = {
+      ...(manaResult || {}),
+      sent: st?.sent ?? 0,
+      failed: st?.failed ?? 0,
+      channel: st?.channel || manaResult?.channel,
+      elapsed_ms: st?.elapsed_ms || 0,
+    };
+    log('ev', `mana: stopped — ${st?.sent ?? 0} sent`);
+    renderStagePanel();
+  } catch (e) {
+    log('err', 'mana stop: ' + e.message);
+    manaRunning = false;
+    manaResult = { ...(manaResult || {}), note: e.message };
+    renderStagePanel();
+  }
+}

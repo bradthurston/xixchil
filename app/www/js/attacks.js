@@ -133,7 +133,7 @@ export const ATTACKS = [
       'associates to the only thing answering. The names worth claiming come from the Analysis ' +
       'plan. This is the class of attack that turns a phone\'s own remembered-network list ' +
       'against it.',
-    needs: [NEED.CAPTURE, NEED.TRANSMIT, NEED.FIRMWARE],
+    needs: [NEED.TRANSMIT, NEED.FIRMWARE],
     firmware: 'PROBE_REPLY_START',
     firmwareNote:
       'Built and verified, end to end. The app builds a probe-response template with a sentinel ' +
@@ -161,7 +161,7 @@ export const ATTACKS = [
           'list of network names continuously, so a device that recognises one connects on its own. ' +
           'It answers probes as well, so it covers both kinds of client. The handshake or the portal ' +
           'password is the payoff.',
-    needs: [NEED.CAPTURE, NEED.TRANSMIT, NEED.FIRMWARE],
+    needs: [NEED.TRANSMIT, NEED.FIRMWARE],
     firmware: 'BEACON_POOL_START',
     firmwareNote:
       'Built and verified. The app builds a beacon pool and tshark decodes every entry: the claimed ' +
