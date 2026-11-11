@@ -859,10 +859,12 @@ function bridgeStateHtml() {
     return `<div class="pnlnote">Not tested yet.</div>`;
   }
   const wl = (bridgeStatus.wordlists || []).join(', ') || 'none';
+  const rl = (bridgeStatus.rules || []).join(', ') || 'none';
   return `<div class="finding low"><div class="ftitle">${Icon('check', { size: 15 })}Bridge reachable</div>
     <div class="fdetail">hashcat ${escapeHtml(bridgeStatus.hashcat || '?')} · mode
       ${escapeHtml(bridgeStatus.mode || '?')} · queued ${bridgeStatus.queued ?? 0} ·
-      wordlists: ${escapeHtml(wl)}</div></div>`;
+      wordlists: ${escapeHtml(wl)}</div>
+    <div class="fdetail" style="font-size:11px;opacity:.6">rules: ${escapeHtml(rl)}</div></div>`;
 }
 
 /** The crack attack's controls: extract, then submit what was found. */
@@ -910,7 +912,7 @@ function crackActionHtml(a) {
         <div class="crackbox win">
           <div class="crackstate">${Icon('key', { size: 15 })}passphrase recovered</div>
           <div class="pw">${escapeHtml(j.password)}</div>
-          <div class="crackmeta">job ${escapeHtml(j.jobId || '')} · ${escapeHtml(j.wordlist || '')}</div>
+          <div class="crackmeta">job ${escapeHtml(j.jobId || '')} · ${escapeHtml(j.wordlist || '')} · ${escapeHtml(j.rules || 'none')}</div>
         </div>
         <div class="row" style="margin-top:8px">
           <button id="crackRun" class="ghost">${Icon('refresh', { size: 18 })}Search again</button>
@@ -1375,12 +1377,13 @@ async function onCrackRun() {
     const out = await bridgeClient().crack({
       hashes: hashFile(handshakeResult.handshakes),
       wordlist: 'rockyou.txt',
+      rules: 'best64.rule',
       onProgress: (s) => {
         crackJob = { ...s, job_id: crackJob?.job_id || s.job_id || '' };
         renderStagePanel();
       },
     });
-    crackJob = { ...out, job: undefined, done: true, wordlist: 'rockyou.txt' };
+    crackJob = { ...out, job: undefined, done: true, wordlist: 'rockyou.txt', rules: 'best64.rule' };
     if (out.state === 'cracked') {
       log('ev', `CRACKED ${out.jobId}: passphrase recovered`);
     } else {
