@@ -1412,6 +1412,12 @@ function boot() {
     setConnected(false);
   });
 
+  // Wipe any stale bridge token from localStorage so the hardcoded default wins
+  const savedToken = localStorage.getItem('bridgeToken');
+  if (savedToken && savedToken !== BRIDGE_DEFAULT_TOKEN) {
+    localStorage.removeItem('bridgeToken');
+  }
+
   // Target pick buttons use event delegation — they're rendered dynamically
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('.pick-target');
