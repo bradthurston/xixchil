@@ -855,7 +855,23 @@ function bridgeStateHtml() {
 
 /** The crack attack's controls: extract, then submit what was found. */
 function crackActionHtml(a) {
-  if (!a.ready) return '';
+  if (!a.ready) {
+    // When blocked, show what still needs to happen. One button per blocker
+    // so the user can resolve them right from this card.
+    const ctx = attackContext();
+    let rows = '';
+    if (!ctx.hasCapture) {
+      rows += `<div class="crackmeta">${Icon('alert', { size: 14 })}Nothing captured yet. Run Capture on the board, then Analyze it.</div>`;
+    }
+    if (!ctx.hasHandshake) {
+      rows += `<div class="crackmeta">${Icon('alert', { size: 14 })}No handshake extracted.
+        After capture, the Analysis stage finds targets — then Force a handshake to catch the key exchange.</div>`;
+    }
+    if (!bridgeStatus?.ok) {
+      rows += `<div class="row" style="margin-top:8px"><button id="brTest" class="primary">${Icon('test', { size: 18 })}Test bridge now</button></div>`;
+    }
+    return rows || '';
+  }
   const hs = handshakeResult;
 
   if (crackRunning) {
