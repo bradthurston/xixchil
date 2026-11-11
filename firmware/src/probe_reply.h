@@ -204,9 +204,9 @@ static bool pr_parse_hex(const char* hex, size_t* out_len) {
 // ── arm the radio ───────────────────────────────────────────────────────────
 
 static bool pr_arm(uint8_t channel) {
-    if (WiFi.getMode() != WIFI_STA) {
-        WiFi.mode(WIFI_STA);
-        WiFi.disconnect();
+    // AP mode: WIFI_IF_AP has fewer raw-TX restrictions than WIFI_IF_STA.
+    if (WiFi.getMode() != WIFI_AP) {
+        WiFi.mode(WIFI_AP);
         delay(60);
     }
     if (esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) return false;
@@ -359,7 +359,7 @@ static bool probe_reply_poll() {
     memcpy(out + 4, e.sta, 6);
 
     // en_sys_seq = true: let the driver own the sequence number.
-    esp_err_t rc = esp_wifi_80211_tx(WIFI_IF_STA, out, (int)g_pr_template_len, true);
+    esp_err_t rc = esp_wifi_80211_tx(WIFI_IF_AP, out, (int)g_pr_template_len, true);
     if (rc == ESP_OK) {
         g_pr_sent++;
         g_pr_lifetime++;

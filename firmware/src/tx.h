@@ -90,17 +90,16 @@ static bool tx_parse_hex(const char* hex, size_t* out_len) {
     return true;
 }
 
-// Put the radio in a state where it can inject. STA mode and an explicit
-// channel; power save off, because a radio that naps between frames does not
-// send the burst the operator asked for.
+// Put the radio in a state where it can inject. AP mode is required for
+// unfettered management frame injection (WIFI_IF_AP) — STA mode restricts
+// which frame types the driver accepts. Explicit channel; power save off.
 static bool tx_arm(uint8_t channel) {
-    // Always re-init STA mode, not conditionally. After promiscuous mode
-    // (from capture, Karma, or a scan) the WiFi driver is in a state where
-    // esp_wifi_set_channel returns OK but esp_wifi_80211_tx silently refuses
-    // every frame. WiFi.mode(WIFI_STA) restarts the stack cleanly.
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    delay(100);  // 60 ms wasn't always enough after promiscuous teardown
+    // NRSuite uses WIFI_IF_AP for raw TX — the AP interface has fewer
+    // restrictions. Match that pattern.
+    if (WiFi.getMode() != WIFI_AP) {
+        WiFi.mode(WIFI_AP);
+        delay(60);
+    }
     if (esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) return false;
     esp_wifi_set_ps(WIFI_PS_NONE);
     return true;
@@ -172,7 +171,7 @@ static bool tx_poll() {
 
     // en_sys_seq = true: let the driver own the sequence number. It retries and
     // keeps the counter consistent, which a frame builder on the phone cannot.
-    esp_err_t rc = esp_wifi_80211_tx(WIFI_IF_STA, g_tx_frame, (int)g_tx_len, true);
+    esp_err_t rc = esp_wifi_80211_tx(WIFI_IF_AP, g_tx_frame, (int)g_tx_len, true);
     if (rc == ESP_OK) {
         g_tx_sent++;
         g_tx_lifetime++;

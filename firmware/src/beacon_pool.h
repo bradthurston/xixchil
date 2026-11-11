@@ -92,9 +92,9 @@ static bool bp_parse_hex(const char* hex, uint8_t* out, size_t* out_len) {
 }
 
 static bool bp_arm(uint8_t channel) {
-    if (WiFi.getMode() != WIFI_STA) {
-        WiFi.mode(WIFI_STA);
-        WiFi.disconnect();
+    // AP mode: WIFI_IF_AP has fewer raw-TX restrictions than WIFI_IF_STA.
+    if (WiFi.getMode() != WIFI_AP) {
+        WiFi.mode(WIFI_AP);
         delay(60);
     }
     if (esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) return false;
@@ -174,7 +174,7 @@ static bool beacon_pool_poll() {
 
     const BpEntry& e = g_bp_pool[g_bp_index];
 
-    esp_err_t rc = esp_wifi_80211_tx(WIFI_IF_STA, e.data, (int)e.frame_len, true);
+    esp_err_t rc = esp_wifi_80211_tx(WIFI_IF_AP, e.data, (int)e.frame_len, true);
     if (rc == ESP_OK) {
         g_bp_sent++;
         g_bp_lifetime++;
