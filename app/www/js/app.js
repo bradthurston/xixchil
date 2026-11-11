@@ -836,11 +836,6 @@ function renderAttackPanel(box) {
   $('#crackExtract')?.addEventListener('click', onExtractHandshakes);
   $('#crackRun')?.addEventListener('click', onCrackRun);
   $('#deauthGo')?.addEventListener('click', onDeauthCapture);
-  // Target pick buttons use event delegation — they're rendered dynamically
-  document.addEventListener('click', (e) => {
-    const btn = e.target.closest('.pick-target');
-    if (btn) onPickTarget({ currentTarget: btn });
-  });
   $('#deauthStop')?.addEventListener('click', onDeauthStop);
   $('#karmaGo')?.addEventListener('click', onKarmaStart);
   $('#karmaStop')?.addEventListener('click', onKarmaStop);
@@ -1184,10 +1179,10 @@ function onPickTarget(e) {
   const idx = parseInt(e.currentTarget.dataset.idx, 10);
   if (!isNaN(idx)) {
     selectedTargetIndex = idx;
+    // Navigate to Attack so the operator sees the target on the card
+    state.stage = 'attack';
+    renderStages();
     renderStagePanel();
-    // Scroll to the Attack step so the operator sees the result
-    const step = document.querySelector('.step-attack');
-    step?.scrollIntoView?.({ behavior: 'smooth' });
   }
 }
 
@@ -1368,6 +1363,12 @@ function boot() {
   $('#linkBtn').addEventListener('click', async () => {
     await transport.disconnect();
     setConnected(false);
+  });
+
+  // Target pick buttons use event delegation — they're rendered dynamically
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.pick-target');
+    if (btn) onPickTarget({ currentTarget: btn });
   });
 
   renderStages();
