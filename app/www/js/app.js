@@ -868,7 +868,7 @@ function crackActionHtml(a) {
         After capture, the Analysis stage finds targets — then Force a handshake to catch the key exchange.</div>`;
     }
     if (!bridgeStatus?.ok) {
-      rows += `<div class="row" style="margin-top:8px"><button id="brTest" class="primary">${Icon('test', { size: 18 })}Test bridge now</button></div>`;
+      rows += `<div class="row" style="margin-top:8px"><button id="brTest" class="primary">${Icon('link', { size: 18 })}Test bridge now</button></div>`;
     }
     return rows || '';
   }
