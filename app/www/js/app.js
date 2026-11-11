@@ -1192,7 +1192,10 @@ function onPickTarget(e) {
 }
 
 async function onDeauthCapture() {
-  const t = analysisPlan ? topTarget(analysisPlan) : null;
+  // Use the operator's picked target, not always the top-scored one.
+  const t = (analysisPlan && selectedTargetIndex != null)
+    ? analysisPlan.targets[selectedTargetIndex]
+    : (analysisPlan ? topTarget(analysisPlan) : null);
   if (!t?.bssid) { log('err', 'deauth: no target — build the plan first'); return; }
   if (t.channel == null) { log('err', 'deauth: target has no channel'); return; }
 
@@ -1242,6 +1245,10 @@ async function onDeauthCapture() {
     const st = await request('TX_STATUS', {}, { timeoutMs: 5000 });
     txResult = { ...txResult, sent: st?.sent ?? 0, failed: st?.failed ?? 0, phase: 'done' };
     log('ev', `deauth: ${st?.sent ?? 0} frames sent, ${st?.failed ?? 0} refused`);
+    if (!st?.sent && st?.failed) {
+      log('err', 'deauth: driver refused every frame — radio mode or channel may be stale ' +
+        '(try stopping Karma/Mana first, or check the target channel is 1–14)');
+    }
 
     // Now the second half: listen for the handshake the burst was meant to provoke.
     txRunning = false;
