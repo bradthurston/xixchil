@@ -36,6 +36,8 @@
 #include "serial_transport.h"
 #include "capture.h"
 #include "tx.h"
+#include "probe_reply.h"
+#include "beacon_pool.h"
 
 // Debug output. This MUST NOT share a port with the protocol — anything printed
 // on a port carrying frames corrupts the stream. Serial0 is the bridged UART,
@@ -51,7 +53,7 @@
   #define DBG(...) do { } while (0)
 #endif
 
-#define FW_VERSION   "0.3.0-tx"
+#define FW_VERSION   "0.4.0-lure"
 #define DEVICE_NAME  "SRC"          // advertised BLE name — deliberately generic
 
 // GATT. UUID base echoes the frame magic 0xADDE.
@@ -169,6 +171,10 @@ static void cmd_status(uint8_t id) {
     // exists" — the two are easy to confuse from the phone side.
     d["tx_ever"] = g_tx_ever;
     d["tx_lifetime"] = g_tx_lifetime;
+    d["probe_reply_ever"] = g_pr_ever;
+    d["probe_reply_running"] = g_pr_on;
+    d["beacon_pool_ever"] = g_bp_ever;
+    d["beacon_pool_running"] = g_bp_on;
     // The device holds nothing. Say so, so the app can prove it.
     d["persisted"] = false;
     reply_json(id, true, d);
@@ -281,6 +287,8 @@ static void cmd_capture_start(uint8_t id, JsonDocument& args) {
     if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
     // A burst in flight owns the radio too — see cmd_tx_frame.
     if (tx_running()) { send_error(id, "burst in flight — stop it first"); return; }
+    if (probe_reply_running()) { send_error(id, "probe reply running — the radio is answering"); return; }
+    if (beacon_pool_running()) { send_error(id, "beacon pool running — the radio is transmitting"); return; }
 
     int      ch   = args["channel"]     | (int)CAP_DEFAULT_CH;
     uint32_t dur  = args["duration_ms"] | (uint32_t)CAP_DEFAULT_MS;
@@ -369,6 +377,8 @@ static void cmd_capture_get(uint8_t id, JsonDocument& args) {
 // receiver, which is neither of the two things the operator asked for.
 static void cmd_tx_frame(uint8_t id, JsonDocument& args) {
     if (cap_running()) { send_error(id, "capture is running — the radio is listening"); return; }
+    if (probe_reply_running()) { send_error(id, "probe reply running — the radio is answering"); return; }
+    if (beacon_pool_running()) { send_error(id, "beacon pool running — the radio is transmitting"); return; }
     if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
 
     const char* hex = args["hex"];
@@ -417,6 +427,108 @@ static void cmd_tx_status(uint8_t id) {
     reply_json(id, true, d);
 }
 
+// ── Probe Reply (Karma) ────────────────────────────────────────────────────
+// Karma answers probe requests with a pre-built template whose SSID is
+// hot-swapped at a known byte offset. The template lives on the phone; the
+// firmware is a dumb transmitter with one swapped field. Karma and Mana can
+// run together — the promiscuous callback belongs to Karma, and the beacon
+// pool rotates from the same loop() pass.
+
+static void cmd_probe_reply_start(uint8_t id, JsonDocument& args) {
+    if (cap_running()) { send_error(id, "capture running — stop it first"); return; }
+    if (tx_running()) { send_error(id, "burst in flight — stop it first"); return; }
+    if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
+
+    const char* hex      = args["template_hex"];
+    int         ch       = args["channel"]       | (int)1;
+    int         kssid_off = args["kssid_offset"] | (int)-1;
+    int         kssid_max = args["kssid_maxlen"] | (int)32;
+    const char* mode     = args["mode"]           | "allowlist";
+
+    if (!hex) { send_error(id, "missing args.template_hex"); return; }
+
+    JsonArrayConst list = args["allowlist"].as<JsonArrayConst>();
+    const char* buf[PR_ALLOWLIST_MAX];
+    uint8_t n = 0;
+    for (JsonVariantConst v : list) {
+        if (n >= PR_ALLOWLIST_MAX) break;
+        buf[n] = v.as<const char*>();
+        if (buf[n]) n++;
+    }
+
+    const char* why = nullptr;
+    if (!probe_reply_start(hex, (uint8_t)ch, (uint16_t)kssid_off, (uint8_t)kssid_max,
+                           buf, n, mode, &why)) { send_error(id, why); return; }
+
+    if (g_reply_ch != nullptr && !g_bp_on) ble_pause();
+    g_stage = STAGE_ATTACK;
+
+    JsonDocument d;
+    d["started"] = true;
+    d["mode"] = mode;
+    d["allowlist_n"] = n;
+    reply_json(id, true, d);
+}
+
+static void cmd_probe_reply_stop(uint8_t id) {
+    bool was = probe_reply_running();
+    probe_reply_stop();
+    if (was && g_reply_ch != nullptr && !g_bp_on) ble_resume();
+    if (!cap_running() && !tx_running() && !beacon_pool_running()) g_stage = STAGE_IDLE;
+    JsonDocument d;
+    probe_reply_stats(d);
+    d["stopped"] = true;
+    reply_json(id, true, d);
+}
+
+static void cmd_probe_reply_status(uint8_t id) {
+    JsonDocument d;
+    probe_reply_stats(d);
+    reply_json(id, true, d);
+}
+
+// ── Beacon Pool (Mana) ─────────────────────────────────────────────────────
+// Mana is a rotating pre-built beacon pool. One beacon per interval from a list
+// the phone built and tshark verified. The pool rotates in loop() alongside the
+// probe_reply poll.
+
+static void cmd_beacon_pool_start(uint8_t id, JsonDocument& args) {
+    if (cap_running()) { send_error(id, "capture running — stop it first"); return; }
+    if (tx_running()) { send_error(id, "burst in flight — stop it first"); return; }
+    if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
+
+    int ch = args["channel"] | (int)1;
+    JsonArrayConst beacons = args["beacons"].as<JsonArrayConst>();
+
+    const char* why = nullptr;
+    if (!beacon_pool_start(beacons, (uint8_t)ch, &why)) { send_error(id, why); return; }
+
+    if (g_reply_ch != nullptr && !g_pr_on) ble_pause();
+    g_stage = STAGE_ATTACK;
+
+    JsonDocument d;
+    d["started"] = true;
+    d["pool_size"] = beacons.size();
+    reply_json(id, true, d);
+}
+
+static void cmd_beacon_pool_stop(uint8_t id) {
+    bool was = beacon_pool_running();
+    beacon_pool_stop();
+    if (was && g_reply_ch != nullptr && !g_pr_on) ble_resume();
+    if (!cap_running() && !tx_running() && !probe_reply_running()) g_stage = STAGE_IDLE;
+    JsonDocument d;
+    beacon_pool_stats(d);
+    d["stopped"] = true;
+    reply_json(id, true, d);
+}
+
+static void cmd_beacon_pool_status(uint8_t id) {
+    JsonDocument d;
+    beacon_pool_stats(d);
+    reply_json(id, true, d);
+}
+
 // ── Dispatch ────────────────────────────────────────────────────────────────
 // Case-insensitive on purpose. NRSuite's firmware answers to uppercase ("PING",
 // "SCAN") and the phone app is written against that convention. Ours must accept
@@ -448,6 +560,12 @@ static void dispatch(const uint8_t* payload, size_t len, uint8_t id) {
     else if (cmd_is(cmd, "tx_frame"))      cmd_tx_frame(id, args);
     else if (cmd_is(cmd, "tx_stop"))       cmd_tx_stop(id);
     else if (cmd_is(cmd, "tx_status"))     cmd_tx_status(id);
+    else if (cmd_is(cmd, "probe_reply_start"))  cmd_probe_reply_start(id, args);
+    else if (cmd_is(cmd, "probe_reply_stop"))   cmd_probe_reply_stop(id);
+    else if (cmd_is(cmd, "probe_reply_status")) cmd_probe_reply_status(id);
+    else if (cmd_is(cmd, "beacon_pool_start"))  cmd_beacon_pool_start(id, args);
+    else if (cmd_is(cmd, "beacon_pool_stop"))   cmd_beacon_pool_stop(id);
+    else if (cmd_is(cmd, "beacon_pool_status")) cmd_beacon_pool_status(id);
     else send_error(id, "unknown cmd");
 }
 
@@ -607,6 +725,27 @@ void loop() {
         JsonDocument d;
         tx_stats(d);
         emit_event_json("tx_done", d);
+        emit_event("stage", stage_name(g_stage));
+    }
+
+    // Probe Reply (Karma): one response per pass from the ring buffer.
+    // Returns true on the pass the mode stops — the hard cap or a user command.
+    if (probe_reply_poll()) {
+        if (g_reply_ch != nullptr && !g_bp_on) ble_resume();
+        if (!cap_running() && !tx_running() && !beacon_pool_running()) g_stage = STAGE_IDLE;
+        JsonDocument d;
+        probe_reply_stats(d);
+        emit_event_json("probe_reply_done", d);
+        emit_event("stage", stage_name(g_stage));
+    }
+
+    // Beacon Pool (Mana): one beacon per interval, rotated from the pool.
+    if (beacon_pool_poll()) {
+        if (g_reply_ch != nullptr && !g_pr_on) ble_resume();
+        if (!cap_running() && !tx_running() && !probe_reply_running()) g_stage = STAGE_IDLE;
+        JsonDocument d;
+        beacon_pool_stats(d);
+        emit_event_json("beacon_pool_done", d);
         emit_event("stage", stage_name(g_stage));
     }
 

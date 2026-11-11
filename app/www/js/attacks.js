@@ -62,10 +62,12 @@ export const FIRMWARE_COMMANDS = new Set([
   'START_HIDDEN_AP', 'STOP_HIDDEN_AP', 'HIDDEN_AP_FORCE_RECONNECT',
   'START_CLIENT_DETECT', 'STOP_CLIENT_DETECT', 'SCAN_WIFI', 'SET_CHANNEL',
   'STOP_ALL', 'REBOOT',
-  // OUR firmware (0.3.0-tx) — the raw transmitter, plus the capture commands
-  // it already had. TX_FRAME is the primitive the handshake attack drives.
+  // OUR firmware (0.4.0-lure) — the raw transmitter + capture + probe reply Karma
+  // + rotating beacon pool Mana.
   'TX_FRAME', 'TX_STOP', 'TX_STATUS',
   'CAPTURE_START', 'CAPTURE_STOP', 'CAPTURE_GET', 'CAPTURE_STATS',
+  'PROBE_REPLY_START', 'PROBE_REPLY_STOP', 'PROBE_REPLY_STATUS',
+  'BEACON_POOL_START', 'BEACON_POOL_STOP', 'BEACON_POOL_STATUS',
   'PING', 'STATUS',
 ]);
 
@@ -123,7 +125,7 @@ export const ATTACKS = [
     name: 'Karma',
     icon: 'antenna',
     kind: 'transmit',
-    built: 'partial',
+    built: 'ready',
     tagline: 'Answer every device that asks for a network by name, and be the only one that answers.',
     detail:
       'A device broadcasts the names of networks it remembers, in the clear, whether or not they ' +
@@ -132,23 +134,18 @@ export const ATTACKS = [
       'plan. This is the class of attack that turns a phone\'s own remembered-network list ' +
       'against it.',
     needs: [NEED.CAPTURE, NEED.TRANSMIT, NEED.FIRMWARE],
-    firmware: null,
+    firmware: 'PROBE_REPLY_START',
     firmwareNote:
-      'Half of this now exists and is verified. The app builds the probe response and tshark decodes ' +
-      'it exactly as written — subtype 0x0005, the asking station in addr1, our address in addr2 and ' +
-      'addr3, the claimed name, the channel, and an RSN IE whose Privacy bit agrees with it ' +
-      '(tools/verify_karma.mjs). Still missing: no firmware drives it. Answering a probe ' +
-      'means receiving one and transmitting in the same breath, and the capture path buffers to ' +
-      'PSRAM and syncs at a stage boundary on purpose, so a busy channel cannot silently outrun the ' +
-      'link — that decision has to be made again inside the firmware loop. No KARMA_* command exists ' +
-      'anywhere: NRSuite has a hidden-AP detector and a captive portal but no SSID-pool lure, and ' +
-      'its own feature list marks the SoftAP half-handshake experiment that would carry this as not ' +
-      'implemented. ' +
-      'Scoping is a separate switch and both settings exist: an allowlist answers only the names ' +
-      'listed, and an empty list answers nothing; a lab-any mode answers whatever a device asks ' +
-      'for. Reaching lab-any takes the exact token, so a typo or a stale value falls back to the ' +
-      'allowlist and closes the gate rather than opening it, and it is an argument rather than a ' +
-      'saved setting, so a restart cannot leave it switched on.',
+      'Built and verified, end to end. The app builds a probe-response template with a sentinel ' +
+      'SSID at a known byte offset, and the firmware hot-swaps the real SSID before transmitting ' +
+      '(probe_reply.h, beacon_pool.h, wired into 0.4.0-lure dispatch table). The promiscuous ' +
+      'callback answers probes as they come in, the ring buffer smooths bursts, and the hard cap ' +
+      'closes the service at 120 s. ' +
+      'Scoping is a separate switch: an allowlist answers only the names listed, and an empty list ' +
+      'answers nothing; a lab-any mode answers whatever a device asks for. Reaching lab-any takes ' +
+      'the exact token, so a typo or a stale value falls back to the allowlist and closes the gate ' +
+      'rather than opening it, and it is an argument rather than a saved setting, so a restart ' +
+      'cannot leave it switched on.',
     action: 'karma',
   },
   {
@@ -156,24 +153,22 @@ export const ATTACKS = [
     name: 'Mana',
     icon: 'antenna',
     kind: 'transmit',
-    built: 'partial',
+    built: 'ready',
     tagline: 'A full fake network for devices that have stopped asking for anything.',
-    detail:
-      'Newer devices stop broadcasting remembered names when they are not actively looking, which ' +
-      'leaves plain Karma with nothing to answer. Mana does not wait to be asked: it beacons a ' +
-      'list of network names continuously, so a device that recognises one connects on its own. ' +
-      'It answers probes as well, so it covers both kinds of client. The handshake or the portal ' +
-      'password is the payoff.',
+        detail:
+          'Newer devices stop broadcasting remembered names when they are not actively looking, which ' +
+          'leaves plain Karma with nothing to answer. Mana does not wait to be asked: it beacons a ' +
+          'list of network names continuously, so a device that recognises one connects on its own. ' +
+          'It answers probes as well, so it covers both kinds of client. The handshake or the portal ' +
+          'password is the payoff.',
     needs: [NEED.CAPTURE, NEED.TRANSMIT, NEED.FIRMWARE],
-    firmware: null,
+    firmware: 'BEACON_POOL_START',
     firmwareNote:
-      'Same split as Karma, and it is the same half that is done: the app builds the beacon and ' +
-      'tshark reads back the claimed name, the channel, the capability bits and the RSN IE, so this ' +
-      'is real frames rather than a sketch (tools/verify_karma.mjs). Still missing: no firmware ' +
-      'for the sustained half. Beaconing a pool continuously while also answering probes needs ' +
-      'receive-and-transmit inside the loop, and nothing dispatches a MANA_* command anywhere. ' +
-      'NRSuite beacons a single name and runs a captive portal as separate features; the pieces ' +
-      'that do not exist are the name list and the drive to associate. ' +
+      'Built and verified. The app builds a beacon pool and tshark decodes every entry: the claimed ' +
+      'name, the channel, the capability bits and the RSN IE. The firmware rotates through the pool ' +
+      'from loop() at each entry\'s declared interval, with the same 120 s hard cap as Karma ' +
+      '(beacon_pool.h). Karma and Mana can run together — the promiscuous callback belongs to ' +
+      'Karma and the beacon pool rotates from the same loop pass. ' +
       'Scoping here is the pool itself: the beacon builder refuses an empty name list, so there is ' +
       'no equivalent of a beacon-everything switch that could be left on by accident.',
     action: 'mana',

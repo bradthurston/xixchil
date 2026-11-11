@@ -127,10 +127,12 @@ ok(badBuilt.length === 0,
 
 // The two half-built attacks must not read as finished. This is the library half
 // of Rule 23: a frame builder landing must not make an attack look runnable.
+// An attack whose firmware half is missing is 'partial'. Today every attack has
+// a firmware command. If a 'partial' ever appears again, it points at real work.
 const halfBuilt = ATTACKS.filter((a) => a.built === 'partial');
-ok(halfBuilt.every((a) => !a.firmware),
-   'an attack marked partial still has no firmware command behind it',
-   halfBuilt.filter((a) => a.firmware).map((a) => a.id).join(', '));
+ok(halfBuilt.length === 0,
+   'no attack is partial — all four have firmware commands behind them',
+   halfBuilt.map((a) => a.id).join(', '));
 
 // The crack attack must not claim to need the radio — it is offline work, and
 // gating it on transmit would hide the one attack that actually runs.
@@ -159,6 +161,7 @@ for (let mask = 0; mask < 16; mask++) {
       if (n === NEED.HANDSHAKE) return ctx.hasHandshake;
       if (n === NEED.TRANSMIT) return ctx.canTransmit;
       if (n === NEED.BRIDGE) return ctx.bridgeReachable;
+      if (n === NEED.FIRMWARE) return !!a.firmware;
       return false;
     });
     if (a.ready !== expected) {
@@ -173,6 +176,7 @@ for (let mask = 0; mask < 16; mask++) {
       if (n === NEED.HANDSHAKE) return !ctx.hasHandshake;
       if (n === NEED.TRANSMIT) return !ctx.canTransmit;
       if (n === NEED.BRIDGE) return !ctx.bridgeReachable;
+      if (n === NEED.FIRMWARE) return !a.firmware;
       return true;
     });
     const listed = a.blockers.map((b) => b.need).sort().join(',');
@@ -200,14 +204,17 @@ ok(runnable(empty).length === 0, 'with nothing available, nothing is runnable');
 
 // The ceiling case. Note what "everything available" now means: every context
 // flag is true, and it is STILL not all four. Karma and Mana need code that has
-// not been written, and no amount of available context can supply that — which
-// is precisely the distinction the separate `firmware` need exists to draw.
+// All four attacks now have firmware code — Karma and Mana gained PROBE_REPLY_START
+// and BEACON_POOL_START in 0.4.0-lure. With a real transmitter that can inject raw
+// frames AND the lure primitives to answer and beacon, every attack the library
+// describes is runnable.
 const full = { hasCapture: true, hasHandshake: true, canTransmit: true, bridgeReachable: true };
-ok(runnable(full).length === ATTACKS.length - 2,
-   `with everything available, ${ATTACKS.length - 2} run — the other two need code, not context`,
+ok(runnable(full).length === ATTACKS.length,
+   `with everything available, all ${ATTACKS.length} attacks run`,
    runnable(full).map((a) => a.id).join(', '));
-ok(ATTACKS.filter((a) => a.kind === 'transmit' && !a.firmware).every((a) => !evaluate(a, full).ready),
-   'an attack with no command behind it is never ready, whatever the context');
+ok(ATTACKS.every((a) => evaluate(a, full).ready),
+   'every attack in the library is ready — no attack is blocked on missing firmware',
+   ATTACKS.filter((a) => !evaluate(a, full).ready).map((a) => a.id).join(', '));
 
 // And the real-world case this stage ships in: our firmware cannot transmit.
 const shipped = { hasCapture: true, hasHandshake: true, canTransmit: false, bridgeReachable: true };
@@ -218,27 +225,26 @@ ok(runnableNow.length === 1 && runnableNow[0].id === 'crack',
 ok(blockedOnTransmit(shipped).length === ATTACKS.length - 1,
    'the other attacks are grouped as blocked on transmit');
 
-// The state this stage ships in NOW: our firmware gained a TX path (0.3.0-tx),
-// so the forced handshake is runnable too. If this flips back, either the
-// firmware regressed or FIRMWARE_CAN_TRANSMIT was set carelessly — both worth
-// a red check.
+// The state this stage ships in NOW: our firmware gained a TX path (0.3.0-tx)
+// AND the Karma/Mana firmware half (0.4.0-lure). All four attacks are runnable.
+// If this flips back, either the firmware regressed or FIRMWARE_CAN_TRANSMIT
+// was set carelessly — both worth a red check.
 const withTx = { hasCapture: true, hasHandshake: true, canTransmit: true, bridgeReachable: true };
 const runnableTx = runnable(withTx).map((a) => a.id).sort();
-ok(runnableTx.join(',') === 'crack,handshake',
-   'with a transmit path, the forced handshake joins crack as runnable',
+ok(runnableTx.join(',') === 'crack,handshake,karma,mana',
+   'with a transmit path and lure firmware, all four attacks are runnable',
    runnableTx.join(', '));
-// The point of the separate `firmware` need: a transmitter on the radio must
-// NOT promote attacks that have no code behind them.
+// Karma and Mana are no longer blocked — they have real firmware now.
 ok(blockedOnTransmit(withTx).length === 0,
    'nothing is blocked on transmit once the radio can inject');
 const stillBlocked = attackList(withTx).filter((a) => !a.ready).map((a) => a.id).sort();
-ok(stillBlocked.join(',') === 'karma,mana',
-   'karma and mana stay blocked — on their own missing code, not on the radio',
+ok(stillBlocked.length === 0,
+   'no attack is blocked — the firmware covers all four',
    stillBlocked.join(', '));
-const karmaBlocker = attackList(withTx).find((a) => a.id === 'karma').blockers.map((b) => b.need);
-ok(karmaBlocker.includes('firmware'),
-   'karma names the real missing piece: firmware, not transmit',
-   karmaBlocker.join(', '));
+const karmaEntry = attackList(withTx).find((a) => a.id === 'karma');
+ok(karmaEntry && karmaEntry.ready,
+   'karma is ready — the firmware dispatch includes PROBE_REPLY_START',
+   karmaEntry ? `ready=${karmaEntry.ready} firmware=${karmaEntry.firmware}` : 'not found');
 
 // ── 2b. the app's command names match the firmware that is actually flashed ──
 //
@@ -258,7 +264,9 @@ try {
   ok(dispatched.size > 5, `found the dispatch table in main.cpp (${dispatched.size} commands)`);
 
   // Our firmware's own commands — the ones the app must not invent.
-  for (const c of ['TX_FRAME', 'TX_STOP', 'TX_STATUS', 'CAPTURE_START', 'CAPTURE_GET', 'PING', 'STATUS']) {
+  for (const c of ['TX_FRAME', 'TX_STOP', 'TX_STATUS', 'CAPTURE_START', 'CAPTURE_GET', 'PING', 'STATUS',
+          'PROBE_REPLY_START', 'PROBE_REPLY_STOP', 'PROBE_REPLY_STATUS',
+          'BEACON_POOL_START', 'BEACON_POOL_STOP', 'BEACON_POOL_STATUS']) {
     ok(dispatched.has(c), `${c} is really dispatched by the firmware`);
   }
 

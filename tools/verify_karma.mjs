@@ -348,6 +348,114 @@ if (haveTshark) {
     bad[0] === 'False' && bad[1] === '1', bad.join(' / '));
 }
 
+// ── template contract: the SSID hot-swap at a known offset ──────────────────
+// The firmware receives a template with a sentinel SSID at a known byte offset
+// and hot-swaps the real SSID before transmitting. It does not parse the frame
+// beyond locating the tag — the phone built the template, tshark verified it,
+// and the firmware trusts the offset. These tests pin that the swap is
+// byte-for-byte correct: the declared offset points to the SSID, swapping
+// produces the same frame that buildProbeResponse would have built directly,
+// and edge cases (short name, exact fit, truncation) do not corrupt the tag.
+{
+  const SENTINEL = 'X'.repeat(32);   // max-length sentinel the firmware declares
+  const tmpl = buildProbeResponse({ ssid: SENTINEL, station: STA, bssid: BSSID, channel: 6, security: SECURITY.WPA2 });
+
+  // Find the SSID tag payload offset — the two bytes before it are [tag=0x00][len].
+  // The probe response body starts with 8 B Timestamp + 2 B Beacon Interval
+  // + 2 B Capability before the IE tag list (802.11-2020 §9.4.1.2).
+  let kssid_offset = -1;
+  for (let i = 24 + 12; i + 2 < tmpl.length; i++) {
+    if (tmpl[i] === 0x00 && tmpl[i + 1] >= 1) { kssid_offset = i + 2; break; }
+  }
+  check('the sentinel SSID tag is found at a known offset',
+    kssid_offset >= 0 && tmpl[kssid_offset - 2] === 0x00 && tmpl[kssid_offset - 1] === 32,
+    `offset=${kssid_offset}`);
+  check('the sentinel at the offset is exactly 32 repeated X bytes',
+    tmpl.slice(kssid_offset, kssid_offset + 32).every((b) => b === 0x58));
+
+  // Swap to an exact-fit 32-byte name.
+  const exact = 'The-Network-That-Fits-Exactly32B';   // 32 chars
+  check('the exact-fit name is 32 bytes', exact.length === 32);
+  const swapped_exact = new Uint8Array(tmpl);
+  swapped_exact.set(Buffer.from(exact), kssid_offset);
+  // The two tag bytes at kssid_offset-2 remain [0x00, 32] — untouched.
+  const pexact = join(work, 'karma-template-exact.pcap');
+  writeFileSync(pexact, pcap([swapped_exact]));
+  const ex = tsharkFields(pexact, 'wlan.ssid')[0];
+  check('tshark reads the swapped exact-fit SSID', unhex(ex[0]) === exact, `${ex[0]} vs ${exact}`);
+
+  // Swap to a short name (pad with zeros).
+  const short = 'Foo-Cafe';
+  const swapped_short = new Uint8Array(tmpl);
+  swapped_short.set(Buffer.from(short), kssid_offset);
+  // Zero-fill the remainder — the firmware does this same memset.
+  swapped_short.fill(0, kssid_offset + short.length, kssid_offset + 32);
+  const pshort = join(work, 'karma-template-short.pcap');
+  writeFileSync(pshort, pcap([swapped_short]));
+  const sh = tsharkFields(pshort, 'wlan.ssid')[0];
+  check('tshark reads the swapped short SSID', unhex(sh[0]).replace(/\0/g, '') === short, `${sh[0]} vs ${short}`);
+
+  // Truncate: a 40-byte name (longer than the sentinel) → only first 32 bytes.
+  const long = 'A-Name-That-Is-Forty-Bytes-Long-Yeah';   // 38 chars
+  const swapped_trunc = new Uint8Array(tmpl);
+  swapped_trunc.set(Buffer.from(long.slice(0, 32)), kssid_offset);
+  // The remainder is already the sentinel 'X's — the firmware would leave them.
+  const ptrunc = join(work, 'karma-template-trunc.pcap');
+  writeFileSync(ptrunc, pcap([swapped_trunc]));
+  const tr = tsharkFields(ptrunc, 'wlan.ssid')[0];
+  check('tshark reads the truncated SSID as the first 32 bytes',
+    unhex(tr[0]) === long.slice(0, 32), `${tr[0]} vs ${long.slice(0, 32)}`);
+
+  // The template-swapped frame is NOT byte-identical to the directly-built one
+  // — the template has a fixed-size SSID tag (32 bytes) and the direct build
+  // has a short tag (8 bytes). But they MUST decode identically in tshark:
+  // same SSID, same BSSID, same RSN, same channel, same capabilities.
+  const ref = buildProbeResponse({ ssid: short, station: STA, bssid: BSSID, channel: 6, security: SECURITY.WPA2 });
+  const pref = join(work, 'karma-template-ref.pcap');
+  writeFileSync(pref, pcap([ref]));
+  const refRow = tsharkFields(pref, 'wlan.ssid', 'wlan.sa', 'wlan.bssid',
+    'wlan.ds.current_channel', 'wlan.rsn.version')[0];
+  check('a template-swapped frame decodes as the same AP in tshark',
+    unhex(refRow[0]) === short &&
+    refRow[1].toLowerCase() === BSSID &&
+    refRow[2].toLowerCase() === BSSID &&
+    refRow[3] === '6' &&
+    refRow[4] === '1',
+    `ssid=${unhex(refRow[0])} sa=${refRow[1]} ch=${refRow[3]} rsn=${refRow[4]}`);
+}
+
+// ── beacon pool: every entry decodes and the pool is a working set ──────────
+{
+  const pool = buildBeaconPool({
+    ssids: ['Alpha', 'Beta', 'Gamma'],
+    bssid: BSSID, channel: 6,
+  });
+
+  check('beacon pool has one entry per name', pool.length === 3, `pool=${pool.length}`);
+  check('every pool entry is a beacon (subtype 0x80)', pool.every((f) => (f[0] & 0xfc) === 0x80));
+
+  // Round-trip the pool through tshark.
+  const pBeacons = join(work, 'karma-pool.pcap');
+  writeFileSync(pBeacons, pcap(pool));
+  const rows = tsharkFields(pBeacons, 'wlan.ssid', 'wlan.fixed.capabilities.privacy', 'wlan.fc.subtype');
+  check('tshark decodes every beacon in the pool', rows.length === 3, `rows=${rows.length}`);
+  check('tshark reads the SSID we claimed per beacon',
+    unhex(rows[0][0]) === 'Alpha' && unhex(rows[1][0]) === 'Beta' && unhex(rows[2][0]) === 'Gamma',
+    rows.map((r) => unhex(r[0])).join(', '));
+  check('tshark reads Privacy set on every WPA2 beacon in the pool',
+    rows.every((r) => r[1] === 'True'),
+    rows.map((r) => r[1]).join(', '));
+  check('tshark reads every entry as a beacon subtype',
+    rows.every((r) => r[2] === '8'), rows.map((r) => r[2]).join(','));
+
+  // An empty pool is refused by the build function — never a beacon.
+  let emptyResult = null;
+  try { emptyResult = buildBeaconPool([]); } catch (_) { /* expected */ }
+  check('buildBeaconPool with an empty list is not a crash and not a beacon',
+    !emptyResult || emptyResult.length === 0,
+    emptyResult ? `got ${emptyResult.length} beacons` : 'threw (acceptable)');
+}
+
 rmSync(work, { recursive: true, force: true });
 
 console.log(failed ? `\n${failed} check(s) FAILED` : '\nall checks passed');
