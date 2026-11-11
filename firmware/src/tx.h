@@ -94,11 +94,13 @@ static bool tx_parse_hex(const char* hex, size_t* out_len) {
 // channel; power save off, because a radio that naps between frames does not
 // send the burst the operator asked for.
 static bool tx_arm(uint8_t channel) {
-    if (WiFi.getMode() != WIFI_STA) {
-        WiFi.mode(WIFI_STA);
-        WiFi.disconnect();
-        delay(60);
-    }
+    // Always re-init STA mode, not conditionally. After promiscuous mode
+    // (from capture, Karma, or a scan) the WiFi driver is in a state where
+    // esp_wifi_set_channel returns OK but esp_wifi_80211_tx silently refuses
+    // every frame. WiFi.mode(WIFI_STA) restarts the stack cleanly.
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    delay(100);  // 60 ms wasn't always enough after promiscuous teardown
     if (esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) return false;
     esp_wifi_set_ps(WIFI_PS_NONE);
     return true;
