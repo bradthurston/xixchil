@@ -220,6 +220,10 @@ function onEvent(json) {
     capture.onCaptureDone(json);
     stopCapTicker();
     log('ev', `capture finished on its own: ${json.frames ?? '?'} frames, ${json.dropped ?? '?'} dropped`);
+    // If this was an after-burst capture, auto-sync and auto-extract
+    if (state.stage === 'attack') {
+      syncAfterBurst();
+    }
     if (state.stage === 'capture') renderStagePanel();
     return;
   }
@@ -873,6 +877,11 @@ function crackActionHtml(a) {
     if (!ctx.hasHandshake) {
       rows += `<div class="crackmeta">${Icon('alert', { size: 14 })}No handshake extracted.
         After capture, the Analysis stage finds targets — then Force a handshake to catch the key exchange.</div>`;
+      if (ctx.hasCapture) {
+        rows += `<div class="row" style="margin-top:8px">
+          <button id="crackExtract" class="primary">${Icon('key', { size: 18 })}Extract handshakes</button>
+        </div>`;
+      }
     }
     if (!bridgeStatus?.ok) {
       rows += `<div class="row" style="margin-top:8px"><button id="brTest" class="primary">${Icon('link', { size: 18 })}Test bridge now</button></div>`;
@@ -1254,6 +1263,43 @@ async function onDeauthCapture() {
     log('err', 'deauth: ' + e.message);
   }
   txRunning = false;
+  renderStagePanel();
+}
+
+/** Auto-sync and extract after the burst capture finishes. */
+let autoExtractRun = 0;
+async function syncAfterBurst() {
+  autoExtractRun++;
+  const runId = autoExtractRun;
+  // Small delay to let the board settle after announcing capture_done
+  await new Promise((r) => setTimeout(r, 500));
+  if (runId !== autoExtractRun) return; // another one came in
+  try {
+    await capture.sync();
+    const s = capture.summary();
+    log('ev', `post-burst: synced ${s.packets} packets`);
+  } catch (e) {
+    log('err', 'post-burst sync: ' + e.message);
+    return;
+  }
+  if (runId !== autoExtractRun) return;
+  const w = capture.writer;
+  if (!w?.chunks?.length) return;
+  try {
+    handshakeResult = extractHandshakes(w.chunks);
+    crackJob = null;
+    const c = handshakeResult.counts;
+    log('ev', `post-burst: ${handshakeResult.handshakes.length} handshake(s) from ${w.chunks.length} frames`);
+  } catch (e) {
+    log('err', 'post-burst extract: ' + e.message);
+  }
+  // Check bridge status if not done recently
+  if (!bridgeStatus?.ok && !bridgeError) {
+    try {
+      bridgeStatus = await bridgeClient().health();
+      log('ev', `bridge: ${bridgeStatus.hashcat} ready`);
+    } catch { /* fine */ }
+  }
   renderStagePanel();
 }
 
