@@ -816,6 +816,22 @@ let manaResult = null;
 let analyzerRunning = false;
 let analyzerResult = null;
 
+const CRACK_DEFAULT_STRATEGY = {
+  mode: 'dictionary',
+  wordlist: 'rockyou.txt',
+  rules: 'best64.rule',
+  mask: '?d?d?d?d?d?d?d?d',
+  chain: false,
+};
+
+/** Saved crack strategy from localStorage (or defaults). */
+function crackStrategy() {
+  try { return { ...CRACK_DEFAULT_STRATEGY, ...JSON.parse(localStorage.getItem('crackStrategy')) }; }
+  catch { return { ...CRACK_DEFAULT_STRATEGY }; }
+}
+function saveCrackStrategy(s) {
+  localStorage.setItem('crackStrategy', JSON.stringify(s));
+}
 const BRIDGE_HISTORY_KEY = 'bridgeUrlHistory';
 const BRIDGE_HISTORY_MAX = 15;
 const PRESETS_KEY = 'attackPresets';
@@ -1030,6 +1046,34 @@ function renderAttackPanel(box) {
   $('#brTest')?.addEventListener('click', onBridgeTest);
   $('#crackExtract')?.addEventListener('click', onExtractHandshakes);
   $('#crackRun')?.addEventListener('click', onCrackRun);
+
+  // Crack strategy controls — save to localStorage on change
+  $('#crackWl')?.addEventListener('change', (e) => {
+    const s = crackStrategy();
+    s.wordlist = e.target.value;
+    saveCrackStrategy(s);
+  });
+  $('#crackRl')?.addEventListener('change', (e) => {
+    const s = crackStrategy();
+    s.rules = e.target.value;
+    saveCrackStrategy(s);
+  });
+  $('#crackMode')?.addEventListener('change', (e) => {
+    const s = crackStrategy();
+    s.mode = e.target.value;
+    saveCrackStrategy(s);
+    renderAttackPanel($('#stagePanel')); // toggle mask field visibility
+  });
+  $('#crackMask')?.addEventListener('change', (e) => {
+    const s = crackStrategy();
+    s.mask = e.target.value.trim() || CRACK_DEFAULT_STRATEGY.mask;
+    saveCrackStrategy(s);
+  });
+  $('#crackChain')?.addEventListener('change', (e) => {
+    const s = crackStrategy();
+    s.chain = e.target.checked;
+    saveCrackStrategy(s);
+  });
   $('#deauthGo')?.addEventListener('click', onDeauthCapture);
   $('#deauthStop')?.addEventListener('click', onDeauthStop);
   $('#karmaGo')?.addEventListener('click', onKarmaStart);
@@ -1206,6 +1250,7 @@ function crackActionHtml(a) {
     return rows || '';
   }
   const hs = handshakeResult;
+  const cs = crackStrategy();
 
   if (crackRunning) {
     const p = crackJob || {};
@@ -1213,6 +1258,7 @@ function crackActionHtml(a) {
     return `
       <div class="crackbox">
         <div class="crackstate">searching — ${escapeHtml(p.state || 'running')}</div>
+        ${p.step ? `<div class="crackmeta" style="color:var(--accent);font-size:11.5px">${escapeHtml(p.step)}</div>` : ''}
         <div class="pbar"><span style="width:${pct}%"></span></div>
         <div class="crackmeta">${pct}%${p.speed_hs ? ` · ${Math.round(p.speed_hs).toLocaleString()} H/s` : ''}
           · job ${escapeHtml(p.job_id || '')}</div>
@@ -1226,7 +1272,7 @@ function crackActionHtml(a) {
         <div class="crackbox win">
           <div class="crackstate">${Icon('key', { size: 15 })}passphrase recovered</div>
           <div class="pw">${escapeHtml(j.password)}</div>
-          <div class="crackmeta">job ${escapeHtml(j.jobId || '')} · ${escapeHtml(j.wordlist || '')} · ${escapeHtml(j.rules || 'none')}</div>
+          <div class="crackmeta">${j.step ? escapeHtml(j.step) + ' · ' : ''}job ${escapeHtml(j.jobId || '')}</div>
         </div>
         <div class="row" style="margin-top:8px">
           <button id="crackRun" class="ghost">${Icon('refresh', { size: 18 })}Search again</button>
@@ -1240,7 +1286,7 @@ function crackActionHtml(a) {
     return `
       <div class="crackbox">
         <div class="crackstate">${escapeHtml(j.state)}</div>
-        <div class="crackmeta">${escapeHtml(why)}</div>
+        <div class="crackmeta">${j.step ? escapeHtml(j.step) + ' — ' : ''}${escapeHtml(why)}</div>
       </div>
       <div class="row" style="margin-top:8px">
         <button id="crackRun" class="ghost">${Icon('refresh', { size: 18 })}Search again</button>
@@ -1285,6 +1331,45 @@ function crackActionHtml(a) {
       <div class="crackstate">${hs.handshakes.length} crackable
         ${hs.handshakes.length === 1 ? 'handshake' : 'handshakes'}</div>
       <div class="hslist">${rows}</div>
+    </div>
+    <div class="secsum" style="margin-top:10px">
+      <div class="sechead">${Icon('settings', { size: 14 })} Strategy</div>
+      <div class="fields" style="margin-bottom:0">
+        <div class="field">
+          <span>Wordlist</span>
+          <select id="crackWl">
+            ${(bridgeStatus?.wordlists || ['rockyou.txt']).map((w) =>
+              `<option value="${escapeHtml(w)}" ${cs.wordlist === w ? 'selected' : ''}>${escapeHtml(w)}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <span>Ruleset</span>
+          <select id="crackRl">
+            <option value="none" ${cs.rules === 'none' ? 'selected' : ''}>none</option>
+            ${(bridgeStatus?.rules || ['best64.rule']).map((r) =>
+              `<option value="${escapeHtml(r)}" ${cs.rules === r ? 'selected' : ''}>${escapeHtml(r)}</option>`
+            ).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="fields" style="margin-bottom:0;margin-top:6px">
+        <div class="field">
+          <span>Mode</span>
+          <select id="crackMode">
+            <option value="dictionary" ${cs.mode === 'dictionary' ? 'selected' : ''}>Dictionary</option>
+            <option value="mask" ${cs.mode === 'mask' ? 'selected' : ''}>Mask</option>
+          </select>
+        </div>
+        <div class="field" id="crackMaskField" style="${cs.mode === 'mask' ? '' : 'display:none'}">
+          <span>Mask</span>
+          <input id="crackMask" placeholder="${CRACK_DEFAULT_STRATEGY.mask}" value="${escapeHtml(cs.mask === CRACK_DEFAULT_STRATEGY.mask ? '' : cs.mask)}">
+        </div>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12.5px;color:var(--muted);cursor:pointer">
+        <input type="checkbox" id="crackChain" ${cs.chain ? 'checked' : ''}>
+        Chain: if dictionary exhausts, try mask attack next
+      </label>
     </div>
     <div class="row" style="margin-top:8px">
       <button id="crackRun" class="primary">${Icon('attack', { size: 18 })}Crack on the bridge</button>
@@ -1723,27 +1808,62 @@ async function onCrackRun() {
   crackJob = { state: 'submitting', job_id: '' };
   renderStagePanel();
 
-  try {
-    const out = await bridgeClient().crack({
-      hashes: hashFile(handshakeResult.handshakes),
-      wordlist: 'rockyou.txt',
-      rules: 'best64.rule',
-      onProgress: (s) => {
-        crackJob = { ...s, job_id: crackJob?.job_id || s.job_id || '' };
-        renderStagePanel();
-      },
-    });
-    crackJob = { ...out, job: undefined, done: true, wordlist: 'rockyou.txt', rules: 'best64.rule' };
-    if (out.state === 'cracked') {
-      log('ev', `CRACKED ${out.jobId}: passphrase recovered`);
-    } else {
-      log('ev', `crack ${out.state} (job ${out.jobId})`);
-    }
-  } catch (e) {
-    crackJob = { state: 'failed', done: true, error: e.message };
-    log('err', 'crack: ' + e.message);
+  const cs = crackStrategy();
+  const steps = [];
+  // Build the chain of attack steps
+  if (cs.mode === 'dictionary' || cs.mode === 'both' || (cs.mode === 'mask' && cs.chain)) {
+    steps.push({ mode: 'dictionary', wordlist: cs.wordlist, rules: cs.rules, label: `${cs.wordlist} + ${cs.rules === 'none' ? 'no rules' : cs.rules}` });
   }
+  if (cs.mode === 'mask' || cs.chain) {
+    steps.push({ mode: 'mask', mask: cs.mask, label: `mask ${cs.mask}` });
+  }
+
+  let finalResult = null;
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const stepLabel = `[${i + 1}/${steps.length}] ${step.label}`;
+    crackJob = { state: `dictionary`, step: stepLabel, job_id: crackJob?.job_id || '' };
+    renderStagePanel();
+
+    try {
+      log('ev', `crack: starting step ${stepLabel}`);
+      const out = await bridgeClient().crack({
+        hashes: hashFile(handshakeResult.handshakes),
+        wordlist: step.wordlist || undefined,
+        rules: step.rules !== 'none' ? step.rules : undefined,
+        attack_mode: step.mode === 'mask' ? 3 : 0,
+        mask: step.mask,
+        onProgress: (s) => {
+          crackJob = { ...s, step: stepLabel, job_id: crackJob?.job_id || s.job_id || '' };
+          renderStagePanel();
+        },
+      });
+
+      if (out.state === 'cracked') {
+        finalResult = { ...out, step: stepLabel };
+        log('ev', `CRACKED (${stepLabel}): passphrase recovered`);
+        break; // Done — chain stops on success
+      }
+
+      log('ev', `crack step exhausted: ${stepLabel} — ${out.state}`);
+      finalResult = { ...out, step: stepLabel };
+
+    } catch (e) {
+      finalResult = { state: 'failed', done: true, error: e.message, step: stepLabel };
+      log('err', `crack step ${stepLabel}: ${e.message}`);
+      break; // On error, stop the chain
+    }
+  }
+
   crackRunning = false;
+  if (finalResult) {
+    crackJob = { ...finalResult, done: true, step: finalResult.step || '' };
+    if (finalResult.state === 'cracked') {
+      log('ev', `CRACKED: ${finalResult.password}`);
+    } else {
+      log('ev', `crack finished: ${finalResult.state}`);
+    }
+  }
   // Release wake lock — crack done, phone can sleep again
   if (wakeLock) { try { wakeLock.release(); } catch {} }
   renderStagePanel();

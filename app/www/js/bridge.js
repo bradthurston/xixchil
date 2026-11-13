@@ -123,14 +123,17 @@ export class CrackBridge {
    * time, so a second submission waits rather than fighting the first for the
    * GPU.
    */
-  async submit({ hashes, wordlist = 'rockyou.txt', rules = 'none', filename = 'handshake.22000' }) {
+  async submit({ hashes, wordlist = 'rockyou.txt', rules = 'none', attack_mode, mask, filename = 'handshake.22000' }) {
     if (!hashes || !hashes.includes('WPA*')) {
       throw new Error('nothing to submit — no WPA* line');
     }
+    const fields = { wordlist, rules };
+    if (attack_mode !== undefined) fields.attack_mode = String(attack_mode);
+    if (mask)                        fields.mask = mask;
     const body = multipartBody({
       filename,
       content: hashes,
-      fields: { wordlist, rules },
+      fields,
     });
     const res = await this.request('POST', '/crack', {
       body,
@@ -173,8 +176,8 @@ export class CrackBridge {
    * hashcat exits 0 for "ran fine, found nothing", which reads like success.
    * Nothing here second-guesses that; it reports what the bridge says.
    */
-  async crack({ hashes, wordlist, rules, onProgress, pollMs = 2000, timeoutMs = 3600000 }) {
-    const jobId = await this.submit({ hashes, wordlist, rules });
+  async crack({ hashes, wordlist, rules, onProgress, pollMs = 2000, timeoutMs = 3600000, attack_mode, mask }) {
+    const jobId = await this.submit({ hashes, wordlist, rules, attack_mode, mask });
     const started = Date.now();
     let last = null;
     let consecutiveErrors = 0;
