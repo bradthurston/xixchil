@@ -224,9 +224,20 @@ static void cmd_stage(uint8_t id, JsonDocument& args) {
 // scan silently swallows every command the phone sends meanwhile and the app
 // looks dead. Start it, remember who asked, answer when it lands.
 static int16_t g_scan_id = -1;      // -1 = no scan in flight
+// ── Channel analyzer state ───────────────────────────────────────────────────
+static bool     g_an_active = false;
+static uint8_t  g_an_id = 0;
+static uint8_t  g_an_index = 0;       // g_an_count when done
+static uint32_t g_an_dwell_ms = 1000;
+static uint32_t g_an_ch_start_ms = 0;
+static uint16_t g_an_results[11] = {0};
+static const uint8_t g_an_channels[] = {1,2,3,4,5,6,7,8,9,10,11};
+static const uint8_t g_an_count = 11;
+// ─────────────────────────────────────────────────────────────────────────────
 
 static void cmd_scan(uint8_t id) {
     if (g_scan_id >= 0) { send_error(id, "scan already running"); return; }
+    if (g_an_active) { send_error(id, "channel analyzer running"); return; }
 
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
@@ -299,6 +310,7 @@ static void cmd_capture_start(uint8_t id, JsonDocument& args) {
     if (cap_running()) { send_error(id, "capture already running"); return; }
     // A scan in flight owns the radio. Refuse rather than fight it.
     if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
+    if (g_an_active) { send_error(id, "channel analyzer running"); return; }
     // A burst in flight owns the radio too — see cmd_tx_frame.
     if (tx_running()) { send_error(id, "burst in flight — stop it first"); return; }
     if (probe_reply_running()) { send_error(id, "probe reply running — the radio is answering"); return; }
@@ -394,6 +406,7 @@ static void cmd_tx_frame(uint8_t id, JsonDocument& args) {
     if (probe_reply_running()) { send_error(id, "probe reply running — the radio is answering"); return; }
     if (beacon_pool_running()) { send_error(id, "beacon pool running — the radio is transmitting"); return; }
     if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
+    if (g_an_active) { send_error(id, "channel analyzer running"); return; }
 
     const char* hex = args["hex"];
     if (!hex) { send_error(id, "missing args.hex"); return; }
@@ -452,6 +465,7 @@ static void cmd_probe_reply_start(uint8_t id, JsonDocument& args) {
     if (cap_running()) { send_error(id, "capture running — stop it first"); return; }
     if (tx_running()) { send_error(id, "burst in flight — stop it first"); return; }
     if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
+    if (g_an_active) { send_error(id, "channel analyzer running"); return; }
 
     const char* hex      = args["template_hex"];
     int         ch       = args["channel"]       | (int)1;
@@ -511,6 +525,7 @@ static void cmd_beacon_pool_start(uint8_t id, JsonDocument& args) {
     if (cap_running()) { send_error(id, "capture running — stop it first"); return; }
     if (tx_running()) { send_error(id, "burst in flight — stop it first"); return; }
     if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
+    if (g_an_active) { send_error(id, "channel analyzer running"); return; }
 
     int ch = args["channel"] | (int)1;
     JsonArrayConst beacons = args["beacons"].as<JsonArrayConst>();
@@ -567,6 +582,7 @@ static void cmd_wardrive_start(uint8_t id, JsonDocument& args) {
     if (probe_reply_running()) { send_error(id, "probe reply running — the radio is answering"); return; }
     if (beacon_pool_running()) { send_error(id, "beacon pool running — the radio is transmitting"); return; }
     if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
+    if (g_an_active) { send_error(id, "channel analyzer running"); return; }
 
     int ch = args["channel"] | (int)1;
     if (ch < 1 || ch > 14) { send_error(id, "channel must be 1..14"); return; }
@@ -640,6 +656,102 @@ static void cmd_get_segment(uint8_t id) {
     JsonDocument d;
     d["sent"] = (uint32_t)sent;
     reply_json(id, true, d);
+}
+
+// ── Channel Analyzer ────────────────────────────────────────────────────────
+// Sweeps channels 1..11, counting all received frames per channel via a
+// temporary promiscuous callback. Returns a JSON array of per-channel counts
+// so the app can render a traffic heatmap.
+//
+// Async/polled like scan_poll — the command starts the sweep, analyzer_poll()
+// steps through channels each loop pass, and the reply fires when done.
+
+static void an_rx_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
+    (void)buf; (void)type;
+    if (g_an_index < g_an_count) g_an_results[g_an_index]++;
+}
+
+static void analyzer_finish(bool aborted) {
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(nullptr);
+
+    JsonDocument d;
+    JsonArray channels = d["channels"].to<JsonArray>();
+    for (uint8_t i = 0; i < g_an_count; i++) {
+        JsonObject ch = channels.add<JsonObject>();
+        ch["channel"] = g_an_channels[i];
+        ch["packets"] = g_an_results[i];
+        ch["duration_ms"] = (aborted && i == g_an_index)
+            ? (uint32_t)(millis() - g_an_ch_start_ms)
+            : g_an_dwell_ms;
+    }
+    d["total"] = g_an_count;
+    d["dwell_ms"] = g_an_dwell_ms;
+    if (aborted) d["aborted"] = true;
+    reply_json(g_an_id, true, d);
+    g_an_active = false;
+}
+
+static void cmd_channel_analyze(uint8_t id, JsonDocument& args) {
+    if (g_an_active) { send_error(id, "analyzer already running"); return; }
+    if (cap_running())    { send_error(id, "capture running — stop it first"); return; }
+    if (tx_running())     { send_error(id, "tx running — stop it first"); return; }
+    if (probe_reply_running()) { send_error(id, "karma running"); return; }
+    if (beacon_pool_running()) { send_error(id, "mana running"); return; }
+    if (g_scan_id >= 0)  { send_error(id, "wifi scan in flight"); return; }
+
+    uint32_t dwell = args["dwell_ms"] | (uint32_t)1000;
+    if (dwell < 200) dwell = 200;
+    if (dwell > 10000) dwell = 10000;
+    g_an_dwell_ms = dwell;
+    g_an_index = 0;
+    memset(g_an_results, 0, sizeof(g_an_results));
+    g_an_id = id;
+
+    // Set up Wi-Fi in STA + promiscuous mode
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    delay(60);
+
+    wifi_promiscuous_filter_t filter;
+    filter.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
+                       | WIFI_PROMIS_FILTER_MASK_CTRL;
+    esp_wifi_set_promiscuous_filter(&filter);
+    esp_wifi_set_promiscuous_rx_cb(&an_rx_cb);
+    if (esp_wifi_set_promiscuous(true) != ESP_OK) {
+        send_error(id, "could not enable promiscuous mode");
+        return;
+    }
+
+    // Set first channel
+    esp_wifi_set_channel(g_an_channels[0], WIFI_SECOND_CHAN_NONE);
+    g_an_ch_start_ms = millis();
+    g_an_active = true;
+    // Reply dispatched by analyzer_poll() when the sweep completes
+}
+
+static void cmd_channel_analyze_stop(uint8_t id) {
+    if (!g_an_active) { send_error(id, "analyzer not running"); return; }
+    analyzer_finish(true);
+    // The reply was sent by analyzer_finish — send a bare ack too? No, the
+    // app gets the abort result from analyzer_finish's reply. The stop
+    // command's id matches the original scan id, so the app matches it.
+}
+
+static void analyzer_poll() {
+    if (!g_an_active) return;
+
+    uint32_t now = millis();
+    if (now - g_an_ch_start_ms < g_an_dwell_ms) return;
+
+    // Move to next channel
+    g_an_index++;
+    if (g_an_index >= g_an_count) {
+        analyzer_finish(false);
+        return;
+    }
+    esp_wifi_set_channel(g_an_channels[g_an_index], WIFI_SECOND_CHAN_NONE);
+    g_an_ch_start_ms = now;
 }
 
 // ── nRF24 ───────────────────────────────────────────────────────────────────
@@ -729,7 +841,8 @@ static void dispatch(const uint8_t* payload, size_t len, uint8_t id) {
     else if (cmd_is(cmd, "wardrive_stop"))  cmd_wardrive_stop(id);
     else if (cmd_is(cmd, "deauth_now"))     cmd_deauth_now(id, args);
     else if (cmd_is(cmd, "get_segment"))    cmd_get_segment(id);
-    else if (cmd_is(cmd, "nrf_send"))       cmd_nrf_send(id, args);
+    else if (cmd_is(cmd, "channel_analyze"))      cmd_channel_analyze(id, args);
+    else if (cmd_is(cmd, "channel_analyze_stop")) cmd_channel_analyze_stop(id);
     else send_error(id, "unknown cmd");
 }
 
@@ -982,6 +1095,9 @@ void loop() {
         emit_event_json("capture_done", d);
         emit_event("stage", stage_name(g_stage));
     }
+
+    // Channel analyzer: steps through channels with a promiscuous counter.
+    analyzer_poll();
 
     static uint32_t last = 0;
     if (millis() - last > 5000) {

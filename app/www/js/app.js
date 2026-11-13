@@ -813,6 +813,8 @@ let karmaRunning = false;
 let karmaResult = null;
 let manaRunning = false;
 let manaResult = null;
+let analyzerRunning = false;
+let analyzerResult = null;
 
 const BRIDGE_HISTORY_KEY = 'bridgeUrlHistory';
 const BRIDGE_HISTORY_MAX = 15;
@@ -965,10 +967,11 @@ function renderAttackPanel(box) {
         <label class="field">
           <span>Bridge URL</span>
           <input id="brUrl" type="url" inputmode="url" autocapitalize="off" spellcheck="false"
-                 value="${escapeHtml(cfg.url)}" list="brUrlList">
-          <datalist id="brUrlList">
-            ${bridgeUrlHistory().map((u) => `<option value="${escapeHtml(u)}">`).join('')}
-          </datalist>
+                 value="${escapeHtml(cfg.url)}" placeholder="${escapeHtml(BRIDGE_DEFAULT_URL)}">
+          <select id="brUrlSelect" style="margin-top:4px;font-size:12px;width:100%">
+            <option value="">${bridgeUrlHistory().length ? '— past URLs —' : '— no history yet —'}</option>
+            ${bridgeUrlHistory().map((u) => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join('')}
+          </select>
         </label>
         <label class="field">
           <span>Token</span>
@@ -982,6 +985,18 @@ function renderAttackPanel(box) {
       <div id="brState">${bridgeStateHtml()}</div>
     </div>
 
+    <div class="secsum">
+      <div class="sechead">${Icon('scan', { size: 16 })} Channel analyzer</div>
+      <div class="pnlnote">Quickly sweeps channels 1–11 and counts packets per channel to show traffic density. Choose a quiet channel for your AP.</div>
+      ${analyzerResult && !analyzerRunning ? analyzerResultHtml(analyzerResult) : ''}
+      <div class="row" style="margin-top:6px">
+        <button id="anScan" class="ghost" ${analyzerRunning ? 'disabled' : ''}>
+          ${Icon('scan', { size: 16 })}${analyzerRunning ? `Scanning (${analyzerResult?.currentChannel ? analyzerResult.currentChannel + '/11' : '0/11'})` : 'Scan channels'}
+        </button>
+        ${analyzerRunning ? `<button id="anStop" class="ghost" style="font-size:12px">${Icon('close', { size: 14 })}Stop</button>` : ''}
+      </div>
+    </div>
+
     <div class="sechead">${Icon('list', { size: 16 })} Attacks (${list.length})</div>
     <div class="atklist">${listHtml}</div>
 
@@ -993,6 +1008,17 @@ function renderAttackPanel(box) {
   $('#brUrl')?.addEventListener('change', (e) => {
     saveBridgeUrl(e.target.value);
     localStorage.setItem('bridgeUrl', e.target.value.trim());
+    bridgeStatus = null; bridgeError = null;
+    renderStagePanel();
+  });
+  $('#brUrlSelect')?.addEventListener('change', (e) => {
+    const val = e.target.value;
+    if (!val) return;
+    const input = $('#brUrl');
+    if (input) { input.value = val; }
+    saveBridgeUrl(val);
+    localStorage.setItem('bridgeUrl', val.trim());
+    e.target.value = '';
     bridgeStatus = null; bridgeError = null;
     renderStagePanel();
   });
@@ -1115,6 +1141,9 @@ function renderAttackPanel(box) {
     localStorage.removeItem('manaPreset');
     renderAttackPanel($('#stagePanel'));
   });
+
+  $('#anScan')?.addEventListener('click', onAnalyzerScan);
+  $('#anStop')?.addEventListener('click', onAnalyzerStop);
 }
 
 function bridgeStateHtml() {
@@ -1132,6 +1161,24 @@ function bridgeStateHtml() {
       ${escapeHtml(bridgeStatus.mode || '?')} · queued ${bridgeStatus.queued ?? 0} ·
       wordlists: ${escapeHtml(wl)}</div>
     <div class="fdetail" style="font-size:11px;opacity:.6">rules: ${escapeHtml(rl)}</div></div>`;
+}
+
+/** Channel analyzer result — horizontal bar chart showing packets per channel. */
+function analyzerResultHtml(r) {
+  const maxPackets = Math.max(1, ...(r.channels || []).map((c) => c.packets));
+  const bars = (r.channels || []).map((c) => {
+    const pct = (c.packets / maxPackets) * 100;
+    return `<div class="anbarrow">
+      <span class="anlabel">ch${c.channel}</span>
+      <div class="antrack"><div class="anfill" style="width:${Math.round(pct)}%"></div></div>
+      <span class="ancount">${c.packets}</span>
+    </div>`;
+  }).join('');
+  return `<div class="anresult">
+    ${r.aborted ? '<div class="finding high"><div class="ftitle">Scan aborted</div></div>' : ''}
+    <div class="anbars">${bars}</div>
+    <div class="ancaption">${r.dwell_ms}ms per channel · ${r.total} channels</div>
+  </div>`;
 }
 
 /** The crack attack's controls: extract, then submit what was found. */
@@ -2157,4 +2204,48 @@ async function onManaStop() {
     manaResult = { ...(manaResult || {}), note: e.message };
     renderStagePanel();
   }
+}
+
+// ── Channel analyzer handlers ───────────────────────────────────────────────
+
+async function onAnalyzerScan() {
+  if (analyzerRunning) return;
+  analyzerRunning = true;
+  analyzerResult = { currentChannel: 0 };
+  renderStagePanel();
+
+  try {
+    const resp = await request('CHANNEL_ANALYZE', {
+      dwell_ms: 1000,
+    }, { timeoutMs: 30000 });
+
+    if (resp?.ok && resp.channels) {
+      analyzerResult = { ...resp, currentChannel: 11 };
+      log('ev', `channel analyzer: ${resp.channels.length} channels scanned, ${resp.dwell_ms}ms dwell`);
+      const total = resp.channels.reduce((s, c) => s + c.packets, 0);
+      log('ev', `channel analyzer: ${total} total packets seen`);
+    } else {
+      analyzerResult = { ...(resp || {}), error: resp?.error || 'no data' };
+      log('err', 'channel analyzer: ' + (resp?.error || 'no response'));
+    }
+  } catch (e) {
+    analyzerResult = { error: e.message };
+    log('err', 'channel analyzer: ' + e.message);
+  }
+  analyzerRunning = false;
+  renderStagePanel();
+}
+
+async function onAnalyzerStop() {
+  if (!analyzerRunning) return;
+  try {
+    const resp = await request('CHANNEL_ANALYZE_STOP', {}, { timeoutMs: 5000 });
+    if (resp?.ok) {
+      analyzerResult = { ...(resp || {}), aborted: true, currentChannel: 11 };
+    }
+  } catch (e) {
+    log('err', 'analyzer stop: ' + e.message);
+  }
+  analyzerRunning = false;
+  renderStagePanel();
 }
