@@ -111,6 +111,11 @@ static size_t  g_rxlen = 0;
 static void send_frame(FrameType type, uint8_t id, const uint8_t* payload, size_t len);
 static void send_error(uint8_t id, const char* msg);
 
+// ── Channel hopping forward declarations ──────────────────────────────────
+static void hop_begin(uint8_t start_ch);
+static void hop_stop();
+static uint8_t hop_poll();
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 static size_t psram_total() {
     return heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
