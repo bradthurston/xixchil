@@ -407,21 +407,38 @@ export function buildBeaconPool({ ssids, bssid, channel = 6, security = SECURITY
 export const SCOPE_ALLOWLIST = 'allowlist';
 export const SCOPE_LAB_ANY = 'lab-any';
 
+/**
+ * Check if an SSID matches any allowlist entry.
+ * Entries ending in '*' are prefix-matched (e.g. "Starbucks*" matches
+ * "Starbucks_WiFi_234"). Other entries are exact.  A bare '*' alone
+ * (trailing '*' with empty prefix) matches everything non-empty.
+ */
+function allowlistHas(ssid, list) {
+  for (const entry of list) {
+    if (entry.endsWith('*')) {
+      const prefix = entry.slice(0, -1);
+      if (ssid.startsWith(prefix)) return true;
+    } else {
+      if (ssid === entry) return true;
+    }
+  }
+  return false;
+}
+
 export function scopedProbeTargets(probes, { allowlist = [], mode = SCOPE_ALLOWLIST } = {}) {
   if (!Array.isArray(probes)) return [];
-  // Exact-token comparison, deliberately. Anything that is not literally
-  // SCOPE_LAB_ANY keeps the allowlist behaviour, so a typo closes the gate
-  // rather than opening it.
+  // Anything that is not literally SCOPE_LAB_ANY keeps the allowlist
+  // behaviour, so a typo closes the gate rather than opening it.
   const answerAny = mode === SCOPE_LAB_ANY;
-  const allowed = new Set(Array.isArray(allowlist) ? allowlist : []);
-  if (!answerAny && allowed.size === 0) return [];
+  const list = Array.isArray(allowlist) ? allowlist : [];
+  if (!answerAny && list.length === 0) return [];
   const scope = answerAny ? SCOPE_LAB_ANY : SCOPE_ALLOWLIST;
   const out = [];
   const seen = new Set();
   for (const p of probes) {
     const ssid = p && p.ssid;
     if (typeof ssid !== 'string' || !ssid) continue;
-    if (!answerAny && !allowed.has(ssid)) continue;
+    if (!answerAny && !allowlistHas(ssid, list)) continue;
     const stations = Array.isArray(p.stations) ? p.stations : [];
     for (const st of stations) {
       const mac = typeof st === 'string' ? st : st && st.mac;

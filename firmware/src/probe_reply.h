@@ -89,12 +89,27 @@ static uint32_t g_pr_lifetime = 0;
 
 static inline bool probe_reply_running() { return g_pr_on; }
 
-// Exact string match, never a substring. The callback writes
-// null-terminated names into the ring buffer, so strcmp is the right check.
+/** Channel hopper updates this when the Wi-Fi channel changes mid-attack,
+ *  so STATUS always reports the current channel. */
+static void probe_reply_set_channel(uint8_t ch) { g_pr_ch = ch; }
+
+// Match an allowlist entry against a probed SSID.
+// Entries ending in '*' are prefix-matched (e.g. "Starbucks*" matches
+// "Starbucks_WiFi_234" and "Starbucks_Guest"). Other entries are exact.
+// A bare '*' alone (still ending with '*') matches everything.
 static bool pr_allowlist_has(const char* ssid) {
     if (!ssid || !*ssid) return false;
     for (uint8_t i = 0; i < g_pr_allowlist_count; i++) {
-        if (strcmp(g_pr_allowlist[i], ssid) == 0) return true;
+        const char* entry = g_pr_allowlist[i];
+        size_t len = strlen(entry);
+        if (len > 0 && entry[len - 1] == '*') {
+            // Wildcard entry: prefix-match (drop the trailing '*')
+            size_t prefix_len = len - 1;
+            if (strncmp(entry, ssid, prefix_len) == 0) return true;
+        } else {
+            // Exact string match
+            if (strcmp(entry, ssid) == 0) return true;
+        }
     }
     return false;
 }

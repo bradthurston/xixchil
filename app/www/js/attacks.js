@@ -84,22 +84,6 @@ export const FIRMWARE_COMMANDS = new Set([
  */
 export const ATTACKS = [
   {
-    id: 'crack',
-    name: 'Password cracking',
-    icon: 'key',
-    kind: 'offline',
-    built: 'ready',
-    tagline: 'Take a captured handshake apart and search a wordlist for the passphrase.',
-    detail:
-      'Pulls the key exchange out of the capture, builds a hashcat 22000 line from it, and sends ' +
-      'that to the GPU box. The search is the slow part and it does not happen on this phone — ' +
-      'the phone extracts, the bridge searches.',
-    needs: [NEED.CAPTURE, NEED.HANDSHAKE, NEED.BRIDGE],
-    firmware: null,
-    firmwareNote: 'Offline work — nothing goes on the air.',
-    action: 'crack',
-  },
-  {
     id: 'handshake',
     name: 'Force a handshake',
     icon: 'capture',
@@ -172,6 +156,22 @@ export const ATTACKS = [
       'Scoping here is the pool itself: the beacon builder refuses an empty name list, so there is ' +
       'no equivalent of a beacon-everything switch that could be left on by accident.',
     action: 'mana',
+  },
+  {
+    id: 'crack',
+    name: 'Password cracking',
+    icon: 'key',
+    kind: 'offline',
+    built: 'ready',
+    tagline: 'Take a captured handshake apart and search a wordlist for the passphrase.',
+    detail:
+      'Pulls the key exchange out of the capture, builds a hashcat 22000 line from it, and sends ' +
+      'that to the GPU box. The search is the slow part and it does not happen on this phone — ' +
+      'the phone extracts, the bridge searches.',
+    needs: [NEED.CAPTURE, NEED.HANDSHAKE, NEED.BRIDGE],
+    firmware: null,
+    firmwareNote: 'Offline work — nothing goes on the air.',
+    action: 'crack',
   },
 ];
 

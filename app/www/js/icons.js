@@ -40,4 +40,5 @@ export const STAGE_ICONS = {
   analyze: 'analyze',
   analysis: 'analysis',
   attack: 'attack',
+  wardrive: 'scan',
 };

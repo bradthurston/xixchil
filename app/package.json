@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@capacitor/core": "^8.3.0",
+    "@capacitor/geolocation": "^8.0.0",
     "@capacitor/filesystem": "^8.1.5",
     "@leeskies/capacitor-usb-serial": "^0.2.0"
   },

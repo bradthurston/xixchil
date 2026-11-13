@@ -38,6 +38,11 @@
 #include "tx.h"
 #include "probe_reply.h"
 #include "beacon_pool.h"
+#include "wardrive.h"
+#include "nrf24.h"
+
+// nRF24 init-once flag. Declared at file scope because cmd_status references it.
+static bool g_nrf_init_done = false;
 
 // Debug output. This MUST NOT share a port with the protocol — anything printed
 // on a port carrying frames corrupts the stream. Serial0 is the bridged UART,
@@ -175,8 +180,12 @@ static void cmd_status(uint8_t id) {
     d["probe_reply_running"] = g_pr_on;
     d["beacon_pool_ever"] = g_bp_ever;
     d["beacon_pool_running"] = g_bp_on;
+    d["nrf_init_done"] = g_nrf_init_done;
     // The device holds nothing. Say so, so the app can prove it.
     d["persisted"] = false;
+    // Wardrive stats folded into the same status object so the app does not
+    // need a separate round trip to check whether wardrive is active.
+    wardrive_stats(d);
     reply_json(id, true, d);
 }
 
@@ -462,6 +471,7 @@ static void cmd_probe_reply_start(uint8_t id, JsonDocument& args) {
 
     if (g_reply_ch != nullptr && !g_bp_on) ble_pause();
     g_stage = STAGE_ATTACK;
+    hop_begin((uint8_t)ch);
 
     JsonDocument d;
     d["started"] = true;
@@ -505,6 +515,7 @@ static void cmd_beacon_pool_start(uint8_t id, JsonDocument& args) {
 
     if (g_reply_ch != nullptr && !g_pr_on) ble_pause();
     g_stage = STAGE_ATTACK;
+    hop_begin((uint8_t)ch);
 
     JsonDocument d;
     d["started"] = true;
@@ -526,6 +537,149 @@ static void cmd_beacon_pool_stop(uint8_t id) {
 static void cmd_beacon_pool_status(uint8_t id) {
     JsonDocument d;
     beacon_pool_stats(d);
+    reply_json(id, true, d);
+}
+
+// ── Wardrive ─────────────────────────────────────────────────────────────────
+// Continuous capture mode: promiscuous stays ON, ring buffer rotates, phone
+// polls for segments every ~200ms. This mode disables BLE — the radio belongs
+// entirely to Wi-Fi sniffing, and there is no coexistence concern over the
+// USB cable where this mode is designed for.
+//
+// Radio conflict: wardrive refuses to start if any other radio op is running
+// (capture, tx, probe_reply, beacon_pool, scan). Deauth bursts use tx.h
+// internally and handle their own radio arbitration.
+
+// Helper to stream FT_PCAP frames (or FT_PCAP_CONT) for get_segment responses.
+static void ward_send_pcap(uint8_t chunk, const uint8_t* data, size_t len) {
+    send_frame(FT_PCAP_CONT, chunk, data, len);
+}
+
+static void cmd_wardrive_start(uint8_t id, JsonDocument& args) {
+    if (wardrive_running()) { send_error(id, "wardrive already running"); return; }
+    if (cap_running()) { send_error(id, "capture is running — the radio is listening"); return; }
+    if (tx_running()) { send_error(id, "burst in flight — stop it first"); return; }
+    if (probe_reply_running()) { send_error(id, "probe reply running — the radio is answering"); return; }
+    if (beacon_pool_running()) { send_error(id, "beacon pool running — the radio is transmitting"); return; }
+    if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
+
+    int ch = args["channel"] | (int)1;
+    if (ch < 1 || ch > 14) { send_error(id, "channel must be 1..14"); return; }
+
+    if (!wardrive_start((uint8_t)ch)) {
+        send_error(id, "wardrive start failed — check PSRAM/channel");
+        return;
+    }
+
+    // Wardrive mode disables BLE — no coexistence issue, cable-only mode
+    if (g_reply_ch != nullptr) ble_pause();
+    g_stage = STAGE_CAPTURE;
+
+    JsonDocument d;
+    d["started"]   = true;
+    d["channel"]   = ch;
+    d["ring_size"] = (uint32_t)WARD_RING_SIZE;
+    reply_json(id, true, d);
+    emit_event("stage", stage_name(g_stage));
+}
+
+static void cmd_wardrive_stop(uint8_t id) {
+    bool was = wardrive_running();
+    wardrive_stop();
+    if (was && g_reply_ch != nullptr) ble_resume();
+    if (!cap_running() && !tx_running()) g_stage = STAGE_IDLE;
+
+    JsonDocument d;
+    wardrive_stats(d);
+    d["stopped"] = was;
+    reply_json(id, true, d);
+    emit_event("stage", stage_name(g_stage));
+}
+
+static void cmd_deauth_now(uint8_t id, JsonDocument& args) {
+    if (!wardrive_capturing()) {
+        send_error(id, "wardrive must be in capturing state for deauth");
+        return;
+    }
+
+    const char* bssid_hex  = args["bssid"];
+    const char* client_hex = args["client"];
+    if (!bssid_hex || !client_hex) {
+        send_error(id, "missing args.bssid and/or args.client (hex MAC)");
+        return;
+    }
+
+    int cnt = args["count"]  | (int)5;
+    int ivl = args["interval_ms"] | (int)100;
+
+    if (!wardrive_deauth_hex(bssid_hex, client_hex, cnt, ivl, id)) {
+        send_error(id, "deauth start failed — bad MAC or radio conflict");
+        return;
+    }
+
+    JsonDocument d;
+    d["started"]     = true;
+    d["count"]       = cnt;
+    d["interval_ms"] = ivl;
+    reply_json(id, true, d);
+}
+
+static void cmd_get_segment(uint8_t id) {
+    if (!wardrive_capturing()) {
+        send_error(id, "wardrive not capturing");
+        return;
+    }
+
+    size_t sent = wardrive_get_segment(id, ward_send_pcap);
+
+    JsonDocument d;
+    d["sent"] = (uint32_t)sent;
+    reply_json(id, true, d);
+}
+
+// ── nRF24 ───────────────────────────────────────────────────────────────────
+// Stub: phoneside builds the MouseJack packet, we just send raw bytes.
+
+static void cmd_nrf_send(uint8_t id, JsonDocument& args) {
+    if (!g_nrf_init_done) {
+        if (!nrf24_init()) {
+            send_error(id, "nrf24 init failed");
+            return;
+        }
+        g_nrf_init_done = true;
+    }
+
+    const char* hex = args["hex"];
+    if (!hex) { send_error(id, "missing args.hex"); return; }
+
+    // Parse hex payload (max 32 bytes for nRF24)
+    size_t n = strlen(hex);
+    if (n < 2 || n > 64 || n % 2) { send_error(id, "hex must be 1..32 bytes, even length"); return; }
+
+    uint8_t buf[32];
+    size_t bytes = n / 2;
+    for (size_t i = 0; i < bytes; i++) {
+        auto nib = [](int c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+        int hi = nib(hex[i * 2]);
+        int lo = nib(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0) { send_error(id, "bad hex char"); return; }
+        buf[i] = (uint8_t)((hi << 4) | lo);
+    }
+
+    int ch = args["channel"] | (int)2;
+    nrf24_set_channel((uint8_t)ch);
+
+    bool ok = nrf24_send_packet(buf, bytes);
+    JsonDocument d;
+    d["ok"]      = ok;
+    d["sent"]    = ok;
+    d["bytes"]   = (uint32_t)bytes;
+    d["channel"] = ch;
     reply_json(id, true, d);
 }
 
@@ -566,6 +720,11 @@ static void dispatch(const uint8_t* payload, size_t len, uint8_t id) {
     else if (cmd_is(cmd, "beacon_pool_start"))  cmd_beacon_pool_start(id, args);
     else if (cmd_is(cmd, "beacon_pool_stop"))   cmd_beacon_pool_stop(id);
     else if (cmd_is(cmd, "beacon_pool_status")) cmd_beacon_pool_status(id);
+    else if (cmd_is(cmd, "wardrive_start")) cmd_wardrive_start(id, args);
+    else if (cmd_is(cmd, "wardrive_stop"))  cmd_wardrive_stop(id);
+    else if (cmd_is(cmd, "deauth_now"))     cmd_deauth_now(id, args);
+    else if (cmd_is(cmd, "get_segment"))    cmd_get_segment(id);
+    else if (cmd_is(cmd, "nrf_send"))       cmd_nrf_send(id, args);
     else send_error(id, "unknown cmd");
 }
 
@@ -693,6 +852,43 @@ static void ble_start() {
     adv->start();
 }
 
+// ── Channel hopping ──────────────────────────────────────────────────────────
+// Shared by Karma (probe_reply) and Mana (beacon_pool). Cycles through all
+// 2.4 GHz channels with a configurable dwell. The initial channel is set by the
+// start command; from there the firmware walks the list.
+#define HOP_DWELL_MS  3000   // 3 seconds per channel
+
+static const uint8_t g_hop_list[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+static const uint8_t g_hop_count = 11;
+static uint8_t  g_hop_index   = 0;
+static bool     g_hop_active  = false;
+static uint32_t g_hop_last_ms = 0;
+
+static void hop_begin(uint8_t start_ch) {
+    g_hop_index = 0;
+    for (uint8_t i = 0; i < g_hop_count; i++) {
+        if (g_hop_list[i] == start_ch) { g_hop_index = i; break; }
+    }
+    g_hop_active  = true;
+    g_hop_last_ms = millis();
+}
+
+static void hop_stop() { g_hop_active = false; }
+
+// Call every loop() pass. Returns the new channel when a hop occurs, 0 otherwise.
+static uint8_t hop_poll() {
+    if (!g_hop_active) return 0;
+    uint32_t now = millis();
+    if (now - g_hop_last_ms >= HOP_DWELL_MS) {
+        g_hop_last_ms = now;
+        g_hop_index = (g_hop_index + 1) % g_hop_count;
+        uint8_t ch = g_hop_list[g_hop_index];
+        esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+        return ch;
+    }
+    return 0;
+}
+
 void setup() {
     Serial.begin(115200);        // native USB: opening it is what makes the port enumerate
     ch_usb.begin(115200);
@@ -747,6 +943,27 @@ void loop() {
         beacon_pool_stats(d);
         emit_event_json("beacon_pool_done", d);
         emit_event("stage", stage_name(g_stage));
+    }
+
+    // Channel hopping: if Karma or Mana is active, cycle channels every 3 s.
+    // Updates the module's channel variable so STATUS reports the current one.
+    {
+        uint8_t hop_ch = hop_poll();
+        if (hop_ch) {
+            if (g_pr_on) probe_reply_set_channel(hop_ch);
+            if (g_bp_on) beacon_pool_set_channel(hop_ch);
+        }
+    }
+    // Auto-stop hopping when both attacks complete
+    if (g_hop_active && !g_pr_on && !g_bp_on) hop_stop();
+
+    // Wardrive: step the deauth burst TX when in deauthing state. When the
+    // burst completes, wardrive_poll() re-enables promiscuous mode and returns
+    // true so we can emit the completion event.
+    if (wardrive_poll()) {
+        JsonDocument d;
+        tx_stats(d);
+        emit_event_json("deauth_done", d);
     }
 
     // Auto-stop on the capture's own duration. cap_poll() returns true on the

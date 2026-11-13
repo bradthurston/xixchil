@@ -14,6 +14,9 @@ import { attackList, blockedOnTransmit } from './attacks.js';
 import { buildDeauth, buildProbeResponse, buildBeaconPool, SECURITY } from './attack.js';
 import { extractHandshakes, hashFile } from './crack.js';
 import { CrackBridge } from './bridge.js';
+import './gps.js';    // window.GPS
+import './hashstore.js'; // window.HashStore
+import './wardrive.js';  // window.Wardrive
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -117,6 +120,13 @@ function setConnected(on) {
   if (link) link.classList.toggle('hidden', !on);
   $('#connectCard')?.classList.toggle('hidden', on);
   $('#consoleCard')?.classList.toggle('hidden', !on);
+
+  // If disconnected while wardriving, stop the session
+  if (!on && window.Wardrive && window.Wardrive.isRunning()) {
+    window.Wardrive.stop();
+  }
+  // Hide wardrive card when offline
+  if (!on) toggleWardriveMode(false);
 }
 
 function renderDevices() {
@@ -195,8 +205,8 @@ function renderDeviceInfo(info) {
 }
 
 function renderStages() {
-  const order = ['capture', 'analyze', 'analysis', 'attack'];
-  const labels = { capture: 'Capture', analyze: 'Analyze', analysis: 'Analysis', attack: 'Attack' };
+  const order = ['capture', 'analyze', 'analysis', 'attack', 'wardrive'];
+  const labels = { capture: 'Capture', analyze: 'Analyze', analysis: 'Analysis', attack: 'Attack', wardrive: 'Wardrive' };
   const box = $('#stages');
   if (!box) return;
   box.innerHTML = order.map((s, i) => `
@@ -207,9 +217,12 @@ function renderStages() {
     </button>`).join('');
   box.querySelectorAll('.stage').forEach((el) => {
     el.addEventListener('click', () => {
-      state.stage = el.dataset.stage;
+      const newStage = el.dataset.stage;
+      state.stage = newStage;
       renderStages();
       renderStagePanel();
+      // Wardrive card visibility
+      toggleWardriveMode(newStage === 'wardrive');
     });
   });
 }
@@ -274,6 +287,7 @@ function renderStagePanel() {
   if (state.stage === 'analyze') { renderAnalyzePanel(box); return; }
   if (state.stage === 'analysis') { renderAnalysisPanel(box); return; }
   if (state.stage === 'attack') { renderAttackPanel(box); return; }
+  if (state.stage === 'wardrive') { renderWardrivePanel(box); return; }
   box.innerHTML = `<div class="empty">${Icon(STAGE_ICONS[state.stage], { size: 30 })}
     <strong>${state.stage}</strong><br>Not wired yet.</div>`;
 }
@@ -305,16 +319,32 @@ function renderCapturePanel(box) {
     </div>
 
     <div class="row">
-      <button id="capStart" class="primary ${running ? 'hidden' : ''}">${Icon('capture', { size: 18 })}Start capture</button>
-      <button id="capStop" class="danger ${running ? '' : 'hidden'}">${Icon('stop', { size: 18 })}Stop</button>
+      <button id="capStart" class="primary ${running || capture.continuousRunning ? 'hidden' : ''}">${Icon('capture', { size: 18 })}Start capture</button>
+      <button id="capStop" class="danger ${running && !capture.continuousRunning ? '' : 'hidden'}">${Icon('stop', { size: 18 })}Stop</button>
+    </div>
+
+    <div id="capContinuousRow" class="row ${capture.continuousRunning ? '' : 'hidden'}" style="margin-top:4px">
+      <button id="capContStop" class="danger">${Icon('stop', { size: 18 })}Stop continuous</button>
+    </div>
+
+    <div id="capContinuousStatus" class="${capture.continuousRunning ? '' : 'hidden'}" style="margin-top:8px">
+      <dl class="kv">
+        <dt>continuous</dt><dd id="contSegments">${capture.continuousSegments} segments</dd>
+        <dt>total frames</dt><dd id="contFrames">${capture.continuousPackets}</dd>
+        <dt>elapsed</dt><dd id="contElapsed">0s</dd>
+      </dl>
     </div>
 
     <div id="capStats"></div>
 
     <div class="row" style="margin-top:10px">
-      <button id="capSync" class="ghost" ${running || !capture.stats ? 'disabled' : ''}>${Icon('refresh', { size: 18 })}Sync to phone</button>
-      <button id="capSave" class="ghost" ${capture.hasData ? '' : 'disabled'}>${Icon('save', { size: 18 })}Save pcap</button>
+      <button id="capSync" class="ghost" ${running || !capture.stats || capture.continuousRunning ? 'disabled' : ''}>${Icon('refresh', { size: 18 })}Sync to phone</button>
+      <button id="capSave" class="ghost" ${capture.hasData && !capture.continuousRunning ? '' : 'disabled'}>${Icon('save', { size: 18 })}Save pcap</button>
     </div>
+
+    <button id="capContStart" class="ghost" style="margin-top:6px;width:100%;font-size:12px" ${running || capture.continuousRunning ? 'disabled' : ''}>
+      ${Icon('play', { size: 14 })}Continuous — auto-stitch multiple buffers into one pcap
+    </button>
 
     ${capture.saved ? `<div class="saved">${Icon('check', { size: 16 })}
       <span>${escapeHtml(capture.saved.path)} · ${fmtBytes(capture.saved.bytes)}</span></div>` : ''}
@@ -326,6 +356,8 @@ function renderCapturePanel(box) {
   $('#capStop')?.addEventListener('click', onCaptureStop);
   $('#capSync')?.addEventListener('click', onCaptureSync);
   $('#capSave')?.addEventListener('click', onCaptureSave);
+  $('#capContStart')?.addEventListener('click', onCaptureContStart);
+  $('#capContStop')?.addEventListener('click', onCaptureContStop);
 
   renderCaptureStats();
 }
@@ -404,6 +436,63 @@ async function onCaptureSave() {
   } catch (e) {
     log('err', 'save: ' + e.message);
   }
+}
+
+// ── continuous capture ─────────────────────────────────────────────
+
+let contTicker = null;
+
+function startContTicker() {
+  stopContTicker();
+  contTicker = setInterval(() => {
+    if (!capture.continuousRunning) { stopContTicker(); return; }
+    const segEl = document.getElementById('contSegments');
+    const frmEl = document.getElementById('contFrames');
+    const elEl = document.getElementById('contElapsed');
+    if (segEl) segEl.textContent = capture.continuousSegments + ' segments';
+    if (frmEl) frmEl.textContent = String(capture.writer?.packets ?? 0);
+    if (elEl) {
+      const secs = Math.floor((Date.now() - (capture.continuousStartWallMs ?? Date.now())) / 1000);
+      elEl.textContent = secs + 's';
+    }
+  }, 1000);
+}
+
+function stopContTicker() {
+  if (contTicker) { clearInterval(contTicker); contTicker = null; }
+}
+
+async function onCaptureContStart() {
+  try {
+    const ch = (document.getElementById('capChannel')?.value) || capture.channel;
+    const durMs = (document.getElementById('capDuration')?.value) || capture.durationMs;
+    const resp = await capture.startContinuous({
+      channel: Number(ch),
+      durationMs: Number(durMs),
+    });
+    log('ev', `continuous: started ch${resp.channel}, ${resp.duration_ms} ms segments`);
+    renderStagePanel();
+    startContTicker();
+  } catch (e) {
+    log('err', 'continuous start: ' + e.message);
+  }
+}
+
+async function onCaptureContStop() {
+  stopContTicker();
+  const btn = document.getElementById('capContStop');
+  if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; }
+  try {
+    const saved = await capture.stopContinuous();
+    if (saved) {
+      log('ev', `continuous: saved ${saved.path} (${fmtBytes(saved.bytes)}, ${saved.packets} packets)`);
+    } else {
+      log('ev', 'continuous: stopped (no data captured)');
+    }
+  } catch (e) {
+    log('err', 'continuous stop: ' + e.message);
+  }
+  renderStagePanel();
 }
 
 // ── analyze panel ─────────────────────────────────────────────────────────────
@@ -710,7 +799,7 @@ function analysisPlanHtml(p) {
 // is the correct behaviour rather than a regression.
 const FIRMWARE_CAN_TRANSMIT = true;
 
-const BRIDGE_DEFAULT_URL = 'http://192.168.1.169:8099';
+const BRIDGE_DEFAULT_URL = 'http://junebug.tailb06fe4.ts.net:8099';
 const BRIDGE_DEFAULT_TOKEN = 'jUsaQB4TFRLVeo977u3XyxgZskrov8GN';
 
 let handshakeResult = null;   // crack extraction over the current capture
@@ -724,6 +813,77 @@ let karmaRunning = false;
 let karmaResult = null;
 let manaRunning = false;
 let manaResult = null;
+
+const BRIDGE_HISTORY_KEY = 'bridgeUrlHistory';
+const BRIDGE_HISTORY_MAX = 15;
+const PRESETS_KEY = 'attackPresets';
+
+/** Common default/router SSIDs for quick-fill in Karma & Mana. */
+const COMMON_DEFAULT_SSIDS = [
+  'CXNK*', 'NETGEAR', 'Linksys', 'xfinitywifi', 'attwifi',
+  'T-Mobile', 'SpectrumWiFi', 'Verizon', 'COX', 'OptimumWiFi',
+  'CenturyLink', 'Starbucks WiFi',
+];
+
+/** Generate a random unicast, locally-administered MAC. Clears the
+ *  multicast bit (byte 0 bit 0) and sets the locally-administered bit
+ *  (byte 0 bit 1), so the address is valid for over-the-air use. */
+function randomMac() {
+  const b = new Uint8Array(6);
+  crypto.getRandomValues(b);
+  b[0] = (b[0] & 0xfe) | 0x02;   // unicast (clear bit 0), local (set bit 1)
+  return Array.from(b).map((x) => x.toString(16).padStart(2, '0')).join(':');
+}
+
+function loadPresets() {
+  try { return JSON.parse(localStorage.getItem(PRESETS_KEY) || '{}'); }
+  catch { return {}; }
+}
+function savePreset(name, config) {
+  const all = loadPresets();
+  all[name] = config;
+  localStorage.setItem(PRESETS_KEY, JSON.stringify(all));
+}
+function deletePreset(name) {
+  const all = loadPresets();
+  delete all[name];
+  localStorage.setItem(PRESETS_KEY, JSON.stringify(all));
+}
+/** Generate the preset dropdown + save/delete buttons for one attack type. */
+function presetControlsHtml(type, saved) {
+  const all = loadPresets();
+  const myPresets = Object.entries(all).filter(([, v]) => v.type === type);
+  if (!myPresets.length && !saved) return '';
+  return `<div class="row" style="margin-top:4px;gap:4px">
+    ${myPresets.length ? `<select id="${type}PresetLoad" style="flex:1;font-size:12px">
+      <option value="">Load preset…</option>
+      ${myPresets.map(([k]) => `<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`).join('')}
+    </select>` : ''}
+    ${saved ? `<span id="${type}PresetName" style="font-size:11px;opacity:.6;flex:1">${escapeHtml(saved)}</span>` : ''}
+    <button id="${type}PresetSave" class="ghost" style="font-size:11px">${Icon('save', { size: 12 })}Save</button>
+    ${myPresets.length ? `<button id="${type}PresetDel" class="ghost" style="font-size:11px" ${saved ? '' : 'disabled'}>${Icon('close', { size: 12 })}Del</button>` : ''}
+  </div>`;
+}
+
+function fillDefaults(textareaId) {
+  const el = document.getElementById(textareaId);
+  if (!el) return;
+  el.value = COMMON_DEFAULT_SSIDS.join('\n');
+}
+
+function bridgeUrlHistory() {
+  try {
+    return JSON.parse(localStorage.getItem(BRIDGE_HISTORY_KEY) || '[]');
+  } catch { return []; }
+}
+
+function saveBridgeUrl(url) {
+  const trimmed = url.trim();
+  if (!trimmed) return;
+  const list = bridgeUrlHistory().filter((u) => u !== trimmed);
+  list.unshift(trimmed);
+  localStorage.setItem(BRIDGE_HISTORY_KEY, JSON.stringify(list.slice(0, BRIDGE_HISTORY_MAX)));
+}
 
 function bridgeConfig() {
   return {
@@ -805,7 +965,10 @@ function renderAttackPanel(box) {
         <label class="field">
           <span>Bridge URL</span>
           <input id="brUrl" type="url" inputmode="url" autocapitalize="off" spellcheck="false"
-                 value="${escapeHtml(cfg.url)}">
+                 value="${escapeHtml(cfg.url)}" list="brUrlList">
+          <datalist id="brUrlList">
+            ${bridgeUrlHistory().map((u) => `<option value="${escapeHtml(u)}">`).join('')}
+          </datalist>
         </label>
         <label class="field">
           <span>Token</span>
@@ -828,6 +991,7 @@ function renderAttackPanel(box) {
   `;
 
   $('#brUrl')?.addEventListener('change', (e) => {
+    saveBridgeUrl(e.target.value);
     localStorage.setItem('bridgeUrl', e.target.value.trim());
     bridgeStatus = null; bridgeError = null;
     renderStagePanel();
@@ -845,9 +1009,112 @@ function renderAttackPanel(box) {
   $('#karmaGo')?.addEventListener('click', onKarmaStart);
   $('#karmaStop')?.addEventListener('click', onKarmaStop);
   $('#karmaRefresh')?.addEventListener('click', pollKarmaStatus);
+  $('#karmaDefaults')?.addEventListener('click', () => fillDefaults('karmaList'));
+  $('#karmaBssidRandom')?.addEventListener('click', () => {
+    const el = $('#karmaBssid');
+    if (el) { el.value = randomMac(); localStorage.setItem('attackBssid', el.value); }
+  });
+  $('#karmaBssid')?.addEventListener('change', (e) => {
+    localStorage.setItem('attackBssid', e.target.value.trim());
+  });
   $('#manaGo')?.addEventListener('click', onManaStart);
   $('#manaStop')?.addEventListener('click', onManaStop);
   $('#manaRefresh')?.addEventListener('click', pollManaStatus);
+  $('#manaDefaults')?.addEventListener('click', () => fillDefaults('manaList'));
+  $('#manaBssidRandom')?.addEventListener('click', () => {
+    const el = $('#manaBssid');
+    if (el) { el.value = randomMac(); localStorage.setItem('attackBssid', el.value); }
+  });
+  $('#manaBssid')?.addEventListener('change', (e) => {
+    localStorage.setItem('attackBssid', e.target.value.trim());
+  });
+  $('#manaPopulate')?.addEventListener('click', onManaPopulate);
+
+  // ── preset event handlers ──────────────────────────────────────────────
+
+  function captureToPreset(type) {
+    const prefix = type;
+    const ch = $(`#${prefix}Ch`);
+    const list = $(`#${prefix}List`);
+    const bssid = $(`#${prefix}Bssid`);
+    const common = {
+      bssid: bssid?.value?.trim() || '',
+      channel: parseInt(ch?.value || '6', 10),
+      ssids: (list?.value || '').split('\n').map(s => s.trim()).filter(Boolean),
+    };
+    if (type === 'karma') {
+      const mode = $(`#${type}ModeSel`);
+      return { ...common, type: 'karma', mode: mode?.value || 'allowlist' };
+    }
+    const intv = $(`#${type}Intv`);
+    return { ...common, type: 'mana', interval: parseInt(intv?.value || '110', 10) };
+  }
+  function fillFromPreset(type, p) {
+    const prefix = type;
+    const ch = $(`#${prefix}Ch`);
+    const list = $(`#${prefix}List`);
+    const bssid = $(`#${prefix}Bssid`);
+    if (ch) ch.value = String(p.channel || 6);
+    if (list) list.value = (p.ssids || []).join('\n');
+    if (bssid) { bssid.value = p.bssid || ''; localStorage.setItem('attackBssid', p.bssid || ''); }
+    if (type === 'karma') {
+      const mode = $(`#${type}ModeSel`);
+      if (mode) mode.value = p.mode || 'allowlist';
+    } else {
+      const intv = $(`#${type}Intv`);
+      if (intv) intv.value = String(p.interval || 110);
+    }
+    localStorage.setItem(`${type}Preset`, '');
+  }
+
+  function promptSave(type) {
+    const name = prompt('Save as preset:');
+    if (!name) return;
+    const config = captureToPreset(type);
+    savePreset(name, config);
+    localStorage.setItem(`${type}Preset`, name);
+    renderAttackPanel($('#stagePanel'));
+  }
+
+  $('#karmaPresetSave')?.addEventListener('click', () => promptSave('karma'));
+  $('#karmaPresetLoad')?.addEventListener('change', (e) => {
+    const name = e.target.value;
+    if (!name) return;
+    const all = loadPresets();
+    const p = all[name];
+    if (!p) return;
+    fillFromPreset('karma', p);
+    localStorage.setItem('karmaPreset', name);
+    renderAttackPanel($('#stagePanel'));
+  });
+  $('#karmaPresetDel')?.addEventListener('click', () => {
+    const name = localStorage.getItem('karmaPreset');
+    if (!name) return;
+    if (!confirm(`Delete preset "${name}"?`)) return;
+    deletePreset(name);
+    localStorage.removeItem('karmaPreset');
+    renderAttackPanel($('#stagePanel'));
+  });
+
+  $('#manaPresetSave')?.addEventListener('click', () => promptSave('mana'));
+  $('#manaPresetLoad')?.addEventListener('change', (e) => {
+    const name = e.target.value;
+    if (!name) return;
+    const all = loadPresets();
+    const p = all[name];
+    if (!p) return;
+    fillFromPreset('mana', p);
+    localStorage.setItem('manaPreset', name);
+    renderAttackPanel($('#stagePanel'));
+  });
+  $('#manaPresetDel')?.addEventListener('click', () => {
+    const name = localStorage.getItem('manaPreset');
+    if (!name) return;
+    if (!confirm(`Delete preset "${name}"?`)) return;
+    deletePreset(name);
+    localStorage.removeItem('manaPreset');
+    renderAttackPanel($('#stagePanel'));
+  });
 }
 
 function bridgeStateHtml() {
@@ -1056,7 +1323,8 @@ function karmaActionHtml(a) {
   if (!a.ready) return '';
 
   const dev = state.deviceInfo;
-  const bssid = dev?.bssid || 'aa:bb:cc:dd:ee:ff';
+  const defaultBssid = dev?.bssid || 'aa:bb:cc:dd:ee:ff';
+  const bssidSaved = localStorage.getItem('attackBssid') || defaultBssid;
   const allowlistSaved = localStorage.getItem('karmaAllowlist') || '';
   const channelSaved = localStorage.getItem('karmaChannel') || '6';
   const modeSaved = localStorage.getItem('karmaMode') || 'allowlist';
@@ -1088,10 +1356,13 @@ function karmaActionHtml(a) {
     </div>`;
   }
 
+  const karmaPresetName = localStorage.getItem('karmaPreset') || '';
+
   return `<div class="crackbox">
     <div class="crackmeta">Answers probe requests on the named channel. The firmware swaps the
       requested SSID into a pre-built template — the radio never builds a frame, only the phone
       does. Every probe request that matches gets a response.</div>
+    ${presetControlsHtml('karma', karmaPresetName)}
     <div class="fields">
       <label class="field">
         <span>Channel</span>
@@ -1110,7 +1381,18 @@ function karmaActionHtml(a) {
       <textarea id="karmaList" rows="4" autocapitalize="off" spellcheck="false"
         placeholder="NETGEAR&#10;xfinitywifi&#10;attwifi">${escapeHtml(allowlistSaved)}</textarea>
     </label>
-    <div class="crackmeta">Firmware BSSID: <code>${escapeHtml(bssid)}</code> · template ~400 bytes · hard cap 120 s</div>
+    <div class="row" style="margin-top:4px">
+      <button id="karmaDefaults" class="ghost" style="font-size:12px">${Icon('list', { size: 14 })}Defaults</button>
+    </div>
+    <label class="field" style="margin-top:6px">
+      <span>BSSID (transmitter MAC)</span>
+      <div class="row" style="gap:4px">
+        <input id="karmaBssid" type="text" pattern="^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$"
+               value="${escapeHtml(bssidSaved)}" style="flex:1;font-family:monospace;font-size:12px">
+        <button id="karmaBssidRandom" class="ghost" style="font-size:11px;white-space:nowrap">Random</button>
+      </div>
+    </label>
+    <div class="crackmeta">template ~400 bytes · hard cap 120 s</div>
     <div class="row" style="margin-top:8px">
       <button id="karmaGo" class="primary">${Icon('capture', { size: 18 })}Start Karma</button>
     </div>
@@ -1124,7 +1406,8 @@ function manaActionHtml(a) {
   if (!a.ready) return '';
 
   const dev = state.deviceInfo;
-  const bssid = dev?.bssid || 'aa:bb:cc:dd:ee:ff';
+  const defaultBssid = dev?.bssid || 'aa:bb:cc:dd:ee:ff';
+  const bssidSaved = localStorage.getItem('attackBssid') || defaultBssid;
   const ssidsSaved = localStorage.getItem('manaSSIDs') || '';
   const channelSaved = localStorage.getItem('manaChannel') || '6';
   const intervalSaved = localStorage.getItem('manaInterval') || '110';
@@ -1156,10 +1439,13 @@ function manaActionHtml(a) {
     </div>`;
   }
 
+  const manaPresetName = localStorage.getItem('manaPreset') || '';
+
   return `<div class="crackbox">
     <div class="crackmeta">Rotates a pool of pre-built beacons on the named channel. Each beacon
       claims a different SSID — the firmware rotates through them so nearby devices see every
       name. The SSID is in clear text; the WPA2 RSN IE is pre-built.</div>
+    ${presetControlsHtml('mana', manaPresetName)}
     <div class="fields">
       <label class="field">
         <span>Channel</span>
@@ -1175,7 +1461,20 @@ function manaActionHtml(a) {
       <textarea id="manaList" rows="4" autocapitalize="off" spellcheck="false"
         placeholder="NETGEAR&#10;xfinitywifi&#10;attwifi">${escapeHtml(ssidsSaved)}</textarea>
     </label>
-    <div class="crackmeta">Firmware BSSID: <code>${escapeHtml(bssid)}</code> · ~400 bytes per beacon · hard cap 120 s</div>
+    <div class="row" style="margin-top:4px">
+      <button id="manaDefaults" class="ghost" style="font-size:12px">${Icon('list', { size: 14 })}Defaults</button>
+      ${analysisPlan ? `<button id="manaPopulate" class="ghost" style="font-size:12px;margin-left:6px">${Icon('capture', { size: 14 })}Populate from Analysis</button>
+      <span id="manaPopulateCount" style="font-size:11px;opacity:.6;margin-left:6px"></span>` : ''}
+    </div>
+    <label class="field" style="margin-top:6px">
+      <span>BSSID (transmitter MAC)</span>
+      <div class="row" style="gap:4px">
+        <input id="manaBssid" type="text" pattern="^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$"
+               value="${escapeHtml(bssidSaved)}" style="flex:1;font-family:monospace;font-size:12px">
+        <button id="manaBssidRandom" class="ghost" style="font-size:11px;white-space:nowrap">Random</button>
+      </div>
+    </label>
+    <div class="crackmeta">~400 bytes per beacon · hard cap 64 SSIDs · 120 s</div>
     <div class="row" style="margin-top:8px">
       <button id="manaGo" class="primary">${Icon('capture', { size: 18 })}Start Mana</button>
     </div>
@@ -1397,6 +1696,120 @@ async function onCrackRun() {
   renderStagePanel();
 }
 
+// ── wardrive panel ────────────────────────────────────────────────────────────
+
+function renderWardrivePanel(box) {
+  // The wardrive card is shown alongside, not inside the stage panel
+  // Just show a brief status summary
+  const w = window.Wardrive;
+  const running = w && w.isRunning();
+  box.innerHTML = `
+    <div class="stagehead">
+      ${Icon('scan', { size: 22 })}
+      <div>
+        <div class="stagename">Wardrive</div>
+        <div class="stagesub">Continuous capture with GPS-tagged deauth and handshake detection.
+          ${running ? 'Active — toggle with the Wardrive card below.' : 'Start from the Wardrive card below.'}</div>
+      </div>
+    </div>
+    <div class="pnlnote">GPS is tagged to every captured handshake. Sessions are stored in
+      localStorage and can be exported as .22000 or JSON for offline analysis.</div>
+    ${running ? '<div class="finding low"><div class="ftitle">' + Icon('check', { size: 15 }) + 'Running</div></div>' : ''}
+  `;
+}
+
+// ── wardrive visibility ──────────────────────────────────────────────────────
+
+/** Toggle wardrive card visibility and hide/show stage panel card (consoleCard3). */
+function toggleWardriveMode(on) {
+  const wc = document.getElementById('wardriveCard');
+  if (wc) wc.classList.toggle('hidden', !on);
+  // Hide the stage panel card when in wardrive mode
+  const card3 = document.getElementById('consoleCard3');
+  if (card3) card3.classList.toggle('hidden', on);
+  // Re-label wardrive button text
+  const btn = document.getElementById('wardriveBtn');
+  if (btn) {
+    const w = window.Wardrive;
+    if (w && w.isRunning()) {
+      btn.textContent = 'Stop Wardrive';
+      btn.className = 'danger';
+    } else {
+      btn.textContent = 'Start Wardrive';
+      btn.className = '';
+    }
+  }
+}
+
+// ── reset ──────────────────────────────────────────────────────────────────────
+/** Full app reset — kills running operations, clears state, disconnects,
+ *  and wipes app-persisted localStorage so the UI goes back to the
+ *  device-selection screen. Leaves the token (bridgeToken, bridgeUrl) and
+ *  bridge history intact — those aren't session state. */
+function resetAll() {
+  // Stop everything that could be running
+  stopCapTicker();
+  stopContTicker();
+  if (capture.continuousRunning) {
+    capture.continuousRunning = false;
+  }
+  if (capture.running) {
+    capture.request('CAPTURE_STOP', undefined, { timeoutMs: 2000 }).catch(() => {});
+  }
+  if (window.Wardrive && window.Wardrive.isRunning()) {
+    window.Wardrive.stop();
+  }
+
+  // Wipe session state from localStorage (keep bridge config & history)
+  const keep = ['bridgeUrl', 'bridgeToken', BRIDGE_HISTORY_KEY, 'karmaChannel', 'karmaAllowlist',
+    'karmaMode', 'manaChannel', 'manaSSIDs', 'manaInterval',
+    'attackBssid', PRESETS_KEY, 'karmaPreset', 'manaPreset'];
+  const saved = {};
+  for (const k of keep) {
+    const v = localStorage.getItem(k);
+    if (v !== null) saved[k] = v;
+  }
+  localStorage.clear();
+  for (const [k, v] of Object.entries(saved)) {
+    localStorage.setItem(k, v);
+  }
+
+  // Disconnect from the board
+  transport.disconnect().catch(() => {});
+  setConnected(false);
+
+  // Wipe in-memory state
+  state.deviceInfo = null;
+  state.stage = 'capture';
+  capture.writer = null;
+  capture.saved = null;
+  capture.stats = null;
+  capture.running = false;
+  capture.continuousRunning = false;
+  capture._continuousDry = false;
+  capture.continuousSegments = 0;
+  capture.continuousPackets = 0;
+  analyzeResult = null;
+  analysisPlan = null;
+  selectedTargetIndex = null;
+  handshakeResult = null;
+  bridgeStatus = null;
+  bridgeError = null;
+  crackJob = null;
+  crackRunning = false;
+  txResult = null;
+  txRunning = false;
+  karmaRunning = false;
+  karmaResult = null;
+  manaRunning = false;
+  manaResult = null;
+
+  // Re-render everything
+  renderStages();
+  renderStagePanel();
+  log('ev', 'app reset');
+}
+
 // ── boot ──────────────────────────────────────────────────────────────────────
 function boot() {
   $('#connPill').innerHTML = '<span class="dot"></span>offline';
@@ -1414,6 +1827,7 @@ function boot() {
     await transport.disconnect();
     setConnected(false);
   });
+  $('#resetBtn')?.addEventListener('click', resetAll);
 
   // Wipe any stale bridge token from localStorage so the hardcoded default wins
   const savedToken = localStorage.getItem('bridgeToken');
@@ -1427,9 +1841,21 @@ function boot() {
     if (btn) onPickTarget({ currentTarget: btn });
   });
 
+  // ── initialise Wardrive ─────────────────────────────────────────────────────
+  if (window.Wardrive) {
+    window.Wardrive.init({
+      request,
+      log,
+      icon: Icon,
+      gps: window.GPS,
+      hashStore: window.HashStore,
+    });
+  }
+
   renderStages();
   renderStagePanel();
   setConnected(false);
+  toggleWardriveMode(false);
   log('ev', 'ready');
 
   const hasPlugin = !!window.Capacitor?.Plugins?.UsbSerial;
@@ -1465,8 +1891,7 @@ async function onKarmaStart() {
     return;
   }
 
-  const dev = state.deviceInfo;
-  const bssid = dev?.bssid || 'aa:bb:cc:dd:ee:ff';
+  const bssid = localStorage.getItem('attackBssid') || state.deviceInfo?.bssid || 'aa:bb:cc:dd:ee:ff';
   const sentinel = 'X'.repeat(32);
 
   let template;
@@ -1571,6 +1996,60 @@ async function onKarmaStop() {
 
 // ── Mana handlers ───────────────────────────────────────────────────────────
 
+/** Populate the Mana SSID textarea from the Analysis plan.
+ *  Pulls rogue names first (devices asking for an AP that doesn't exist
+ *  on the air — best targets), then AP SSIDs from the plan, dedup'd.
+ *  Firmware caps at 64, so anything beyond that is dropped with a note. */
+function onManaPopulate() {
+  const listEl = $('#manaList');
+  if (!listEl) return;
+  const p = analysisPlan;
+  if (!p) return;
+
+  const seen = new Set();
+  const list = [];
+
+  // Rogue names first — these are the strongest play
+  if (p.rogue) {
+    for (const g of p.rogue) {
+      if (g.ssid && !seen.has(g.ssid)) {
+        seen.add(g.ssid);
+        list.push(g.ssid);
+      }
+    }
+  }
+
+  // Then AP SSIDs from the targets
+  if (p.targets) {
+    for (const t of p.targets) {
+      if (t.name && !seen.has(t.name)) {
+        seen.add(t.name);
+        list.push(t.name);
+      }
+    }
+  }
+
+  // Keep the user's existing entries if the textarea already has content
+  const existing = listEl.value.split('\n').map(s => s.trim()).filter(Boolean);
+  for (const s of existing) {
+    if (s && !seen.has(s)) {
+      seen.add(s);
+      list.push(s);
+    }
+  }
+
+  const capped = list.slice(0, 64);
+  listEl.value = capped.join('\n');
+
+  const count = document.getElementById('manaPopulateCount');
+  if (count) {
+    const dropped = list.length - capped.length;
+    count.textContent = `${capped.length} SSIDs${dropped > 0 ? ` (${dropped} over cap dropped)` : ''}`;
+  }
+
+  log('ev', `mana: populated ${capped.length} SSIDs from Analysis${list.length > capped.length ? `, ${list.length - capped.length} over 64 cap dropped` : ''}`);
+}
+
 /** Build a beacon pool from the user's SSID list and send it to the firmware. */
 async function onManaStart() {
   const chEl = $('#manaCh');
@@ -1589,8 +2068,7 @@ async function onManaStart() {
     return;
   }
 
-  const dev = state.deviceInfo;
-  const bssid = dev?.bssid || 'aa:bb:cc:dd:ee:ff';
+  const bssid = localStorage.getItem('attackBssid') || state.deviceInfo?.bssid || 'aa:bb:cc:dd:ee:ff';
 
   let frames;
   try {

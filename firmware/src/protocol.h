@@ -34,6 +34,7 @@ enum FrameType : uint8_t {
     FT_PCAP  = 0x04,  // device -> phone, binary artifact (reserved)
     FT_ACK   = 0x05,  // device -> phone, bare acknowledgement
     FT_HTML  = 0x06,  // device -> phone, captive-portal page (reserved)
+    FT_PCAP_CONT = 0x07,  // device -> phone, continuous-capture segment (wardrive)
 };
 
 // Alias kept for readability in code that predates the rename.

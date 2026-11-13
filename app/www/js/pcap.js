@@ -115,6 +115,14 @@ export class PcapWriter {
     this.lastTs = null;
   }
 
+  /** Update the device-clock anchor for the next segment's TSFT conversion.
+   *  Called between segments in continuous capture, where the board clock keeps
+   *  counting but each CAPTURE_START returns its own t0. */
+  updateAnchor(t0Us, t0WallMs) {
+    this.t0Us = Number.isFinite(t0Us) ? t0Us : null;
+    this.t0WallMs = Number.isFinite(t0WallMs) ? t0WallMs : null;
+  }
+
   /** Add one radiotap+frame chunk. */
   add(chunk) {
     if (!chunk || !chunk.length) return;

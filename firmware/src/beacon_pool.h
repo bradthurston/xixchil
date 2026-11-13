@@ -67,6 +67,10 @@ static uint32_t g_bp_lifetime   = 0;
 
 static inline bool beacon_pool_running() { return g_bp_on; }
 
+/** Channel hopper updates this when the Wi-Fi channel changes mid-attack,
+ *  so STATUS always reports the current channel. */
+static void beacon_pool_set_channel(uint8_t ch) { g_bp_ch = ch; }
+
 static bool bp_parse_hex(const char* hex, uint8_t* out, size_t* out_len) {
     if (!hex) return false;
     size_t n = strlen(hex);

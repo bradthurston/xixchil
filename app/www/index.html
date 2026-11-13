@@ -18,6 +18,7 @@
     </svg>
     <h1>Radio Console</h1>
     <span class="pill" id="connPill"><span class="dot"></span>offline</span>
+    <button id="resetBtn" class="pill ghost" style="margin-left:auto;font-size:11px;padding:2px 8px">reset</button>
   </header>
 
   <main>
@@ -49,6 +50,21 @@
       <div id="stagePanel"></div>
     </section>
 
+    <!-- ── wardrive ───────────────────────────────────────────── -->
+    <section class="card hidden" id="wardriveCard">
+      <h2>Wardrive</h2>
+      <button id="wardriveBtn">Start Wardrive</button>
+      <div id="wardriveStatus" class="hidden">
+        <div class="wrow">GPS: <span id="gpsStatus">no fix</span></div>
+        <div class="wrow">Frames: <span id="wFrames">0</span></div>
+        <div class="wrow">APs: <span id="wAPs">0</span></div>
+        <div class="wrow">Deauths: <span id="wDeauths">0</span></div>
+        <div class="wrow">Handshakes: <span id="wHandshakes">0</span></div>
+        <div class="wrow">Duration: <span id="wDuration">0s</span></div>
+      </div>
+      <div id="wardriveLog" style="max-height:100px; overflow-y:auto; font-size:11px; margin-top:10px;"></div>
+    </section>
+
     <!-- ── log ─────────────────────────────────────────────────── -->
     <section class="card">
       <h2>Trace</h2>
@@ -58,18 +74,20 @@
   </main>
 </div>
 
+<script src="./js/gps.js"></script>
+<script src="./js/hashstore.js"></script>
+<script src="./js/wardrive.js"></script>
 <script type="module" src="./js/app.js"></script>
 <script>
-  // The flow cards share the console's visibility. Keep them in sync without
-  // duplicating the toggle logic in app.js.
-  const sync = () => {
+  // Theme toggle on consoleCard visibility — hides flow cards when disconnected.
+  const syncCards = () => {
     const on = document.getElementById('consoleCard').classList.contains('hidden') === false;
     ['consoleCard2', 'consoleCard3'].forEach((id) =>
       document.getElementById(id).classList.toggle('hidden', !on));
   };
-  new MutationObserver(sync)
+  new MutationObserver(syncCards)
     .observe(document.getElementById('consoleCard'), { attributes: true, attributeFilter: ['class'] });
-  window.addEventListener('DOMContentLoaded', sync);
+  window.addEventListener('DOMContentLoaded', syncCards);
 </script>
 </body>
 </html>
