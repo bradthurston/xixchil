@@ -177,9 +177,23 @@ export class CrackBridge {
     const jobId = await this.submit({ hashes, wordlist, rules });
     const started = Date.now();
     let last = null;
+    let consecutiveErrors = 0;
 
     for (;;) {
-      const s = await this.status(jobId);
+      let s;
+      try {
+        s = await this.status(jobId);
+        consecutiveErrors = 0;
+      } catch (e) {
+        consecutiveErrors++;
+        // Network blip (phone sleep / doze) — retry with backoff instead of
+        // killing the job. The bridge keeps running.
+        if (consecutiveErrors > 10) throw e;
+        const backoff = Math.min(pollMs * consecutiveErrors, 30000);
+        if (onProgress) onProgress({ state: 'reconnecting', progress: null, note: `network drop — retry ${consecutiveErrors}/${10} (${backoff}ms)` });
+        await new Promise((r) => setTimeout(r, backoff));
+        continue;
+      }
       last = s;
       if (onProgress) onProgress(s);
 

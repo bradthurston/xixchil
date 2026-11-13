@@ -1715,6 +1715,10 @@ async function onCrackRun() {
   const cfg = bridgeConfig();
   if (!cfg.url) { log('err', 'crack: no bridge URL set'); return; }
 
+  // Acquire screen wake lock to prevent Android doze during crack
+  let wakeLock = null;
+  try { wakeLock = await navigator.wakeLock.request('screen'); } catch {}
+
   crackRunning = true;
   crackJob = { state: 'submitting', job_id: '' };
   renderStagePanel();
@@ -1740,6 +1744,8 @@ async function onCrackRun() {
     log('err', 'crack: ' + e.message);
   }
   crackRunning = false;
+  // Release wake lock — crack done, phone can sleep again
+  if (wakeLock) { try { wakeLock.release(); } catch {} }
   renderStagePanel();
 }
 
@@ -1910,6 +1916,30 @@ function boot() {
   if (!hasPlugin) {
     log('err', 'This only works in the installed app — a browser has no USB-OTG access.');
   }
+
+  // ── Bridge keepalive ─────────────────────────────────────────────────────────
+  // Ping the bridge every 30 s so the status auto-recovers after the phone
+  // wakes from doze or the WiFi reconnects. Silent on failure.
+  setInterval(async () => {
+    // Only ping if we're past the confirm stage (user has set a URL) and we
+    // either have a stale status or the crack job would benefit from recovery.
+    const cfg = bridgeConfig();
+    if (!cfg.url) return;
+    // Skip if we already have a healthy status and nothing is running
+    if (bridgeStatus?.ok && !crackRunning && !analyzerRunning) return;
+    try {
+      const h = await bridgeClient().health();
+      if (!bridgeStatus?.ok || bridgeStatus.hashcat !== h.hashcat) {
+        bridgeStatus = h;
+        bridgeError = null;
+        renderStagePanel();
+        log('ev', `bridge keepalive: ${h.hashcat} ready`);
+      }
+    } catch {
+      // silently ignore — next tick will retry
+    }
+  }, 30000);
+
   refreshDevices();
 }
 
