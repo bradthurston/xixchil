@@ -288,12 +288,27 @@ ok(junk.warnings.length === 2, `both bad lines warned about (got ${junk.warnings
 
 console.log('\n4. crack the imported hash on the real bridge');
 const BRIDGE_URL = process.env.BRIDGE_URL || 'http://127.0.0.1:8099';
-// Read the token out of app.js so the test also proves the app's baked-in token
-// is the one the bridge accepts — the failure that would otherwise only show up
-// on the phone.
+
+// The token is deliberately NOT in the tree, and that is what this section now
+// pins. It used to read a baked-in token out of app.js — which meant the test
+// could only pass while a live credential sat in the source: it *required* the
+// security hole. Once the token moved to the gitignored bridge-defaults.js that
+// assertion became "the app is still insecure", and it failed for exactly the
+// right reason. Inverted: assert the tracked source is clean, then take the
+// token from the local gitignored file (or the environment) to run the crack.
 const appSrc = readFileSync(join(APP_JS, 'app.js'), 'utf8');
-const tokenMatch = appSrc.match(/BRIDGE_DEFAULT_TOKEN\s*=\s*'([^']+)'/);
-ok(!!tokenMatch, 'the app has a baked-in bridge token to test against');
+ok(!/BRIDGE_DEFAULT_TOKEN\s*=\s*'[^']+'/.test(appSrc),
+  'no live bridge token is baked into the tracked app.js');
+ok(/BRIDGE_DEFAULTS\.token/.test(appSrc),
+  'the app reads its token from the local defaults object instead');
+
+let token = process.env.BRIDGE_TOKEN || '';
+const localDefaults = join(APP_JS, 'bridge-defaults.js');
+if (!token && existsSync(localDefaults)) {
+  const m = readFileSync(localDefaults, 'utf8').match(/token\s*:\s*['"]([^'"]+)['"]/);
+  if (m) token = m[1];
+}
+ok(!!token, 'a bridge token is available locally (gitignored bridge-defaults.js, or $BRIDGE_TOKEN)');
 
 let bridgeUp = false;
 try {
@@ -303,9 +318,9 @@ try {
 
 if (!bridgeUp) {
   console.log(`  skip bridge crack — no bridge answering at ${BRIDGE_URL}`);
-} else if (tokenMatch) {
+} else if (token) {
   const { CrackBridge } = await import(join(APP_JS, 'bridge.js'));
-  const bridge = new CrackBridge({ baseUrl: BRIDGE_URL, token: tokenMatch[1] });
+  const bridge = new CrackBridge({ baseUrl: BRIDGE_URL, token });
 
   const health = await bridge.health();
   ok(health.ok === true, `bridge healthy (hashcat ${health.hashcat})`);
