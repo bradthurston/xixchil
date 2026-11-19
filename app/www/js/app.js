@@ -801,8 +801,14 @@ function analysisPlanHtml(p) {
 // is the correct behaviour rather than a regression.
 const FIRMWARE_CAN_TRANSMIT = true;
 
-const BRIDGE_DEFAULT_URL = 'http://junebug.tailb06fe4.ts.net:8099';
-const BRIDGE_DEFAULT_TOKEN = 'jUsaQB4TFRLVeo977u3XyxgZskrov8GN';
+// The bridge URL and token are NOT in this file. They are yours — your network
+// and a live credential for your GPU box — so the tracked default is empty and
+// the real values live in the gitignored `bridge-defaults.js` (copy
+// `bridge-defaults.example.js`). A fresh clone therefore starts unconfigured
+// and asks, instead of shipping somebody's host and token.
+const BRIDGE_DEFAULTS = window.BRIDGE_DEFAULTS || {};
+const BRIDGE_DEFAULT_URL = BRIDGE_DEFAULTS.url || '';
+const BRIDGE_DEFAULT_TOKEN = BRIDGE_DEFAULTS.token || '';
 
 let handshakeResult = null;   // crack extraction over the current capture
 // A capture that came in as a file rather than off the wire. Kept apart from
@@ -2317,9 +2323,12 @@ function boot() {
     if (!document.hidden) checkSharedCapture();
   });
 
-  // Wipe any stale bridge token from localStorage so the hardcoded default wins
+  // Wipe a stale bridge token so a compiled-in default wins — but ONLY when
+  // there is a default to win with. The default is empty now (it lives in the
+  // gitignored bridge-defaults.js), and wiping against an empty default would
+  // delete a token the user set in Settings on every single boot.
   const savedToken = localStorage.getItem('bridgeToken');
-  if (savedToken && savedToken !== BRIDGE_DEFAULT_TOKEN) {
+  if (BRIDGE_DEFAULT_TOKEN && savedToken && savedToken !== BRIDGE_DEFAULT_TOKEN) {
     localStorage.removeItem('bridgeToken');
   }
 

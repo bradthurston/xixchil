@@ -4,6 +4,8 @@ firmware/.vscode/
 
 # app
 app/node_modules/
+# live bridge URL + token — yours, never the project's. Copy the .example.js.
+app/www/js/bridge-defaults.js
 app/android/.gradle/
 app/android/build/
 app/android/app/build/

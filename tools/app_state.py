@@ -5,8 +5,8 @@ Why this exists
 ---------------
 The app persists its config (bridgeUrl, bridgeToken, ...) in WebView localStorage.
 A saved value silently OVERRIDES the compiled-in default, so a URL left over from
-an earlier session on the home LAN (`http://192.168.1.169:8099`) kept the app off
-the MagicDNS default and would have failed anywhere off that LAN.
+an earlier session on the home LAN (`http://<lan-ip>:8099`) kept the app off
+the default and would have failed anywhere off that LAN.
 
 Editing those values through the UI is not reliable: `adb shell input tap` on a
 text input places the caret wherever you tapped, so clearing with DEL truncates
@@ -16,7 +16,7 @@ Usage (phone attached by adb, app running with USB debugging on)
 ---------------------------------------------------------------
   tools/app_state.py --list
   tools/app_state.py --get bridgeUrl
-  tools/app_state.py --set bridgeUrl http://junebug.tailb06fe4.ts.net:8099
+  tools/app_state.py --set bridgeUrl http://<your-bridge-host>:8099
   tools/app_state.py --set bridgeToken <value> --no-reload
 
 Notes
