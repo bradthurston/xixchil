@@ -1329,6 +1329,13 @@ static uint8_t hop_poll() {
 }
 
 void setup() {
+    // The Arduino USBCDC RX ring buffer defaults to 256 bytes (begin() applies that
+    // default only when the queue was not already set). A protocol frame may be up
+    // to FRAME_MAX_PAYLOAD bytes and the host writes one as a single USB burst:
+    // with a 256-byte ring the excess is silently discarded ("CDC RX Overflow") and
+    // the frame never parses — a page push dies mid-hex and reads like a firmware
+    // bug, not a transport limit. Must be set BEFORE begin().
+    Serial.setRxBufferSize(FRAME_MAX_PAYLOAD * 2);
     Serial.begin(115200);        // native USB: opening it is what makes the port enumerate
     ch_usb.begin(115200);
     ch_uart.begin(115200);       // the bridged UART — where a phone cable most often lands
