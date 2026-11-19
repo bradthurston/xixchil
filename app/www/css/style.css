@@ -134,6 +134,11 @@ header {
    is happening. Everything else earns its colour by meaning something. */
 header > svg { color: var(--accent); flex: none; }
 header h1 { font-size: 17px; font-weight: 650; margin: 0; letter-spacing: .2px; flex: 1; }
+/* Ink or paper. Names the theme it switches TO, so it says what it does
+   instead of showing a glyph you have to decode. */
+#themeBtn { gap: 5px; color: var(--muted); }
+#themeBtn:hover, #themeBtn:focus-visible { color: var(--accent); border-color: var(--accent-line); }
+#themeBtn #themeName { font-size: 11px; letter-spacing: .3px; }
 
 .pill {
   display: inline-flex; align-items: center; gap: 6px;
