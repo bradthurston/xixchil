@@ -50,18 +50,41 @@ are enforced **before** the switch is flipped, not after.
 Cleaning the tree does not clean the past. `git log -S <string>` finds a string anywhere in
 history, and a public clone can reach any commit, not just the tip.
 
-**Known residue at the time of writing:** the real SSID of the home network the captures were taken
-from was committed inside `tools/verify_analyze.mjs` (introduced in the commit that wired the
-Analyze stage, `17879cb`, and present in the private origin's history). The working tree is clean
-as of this scrub; **history is not.** The same is true of the made-up test SSID `RC-TX-TEST`.
+**DONE — history was rewritten on 2026-11-19, while this repo was still private.** The real SSID of
+the network the captures came from sat inside `tools/verify_analyze.mjs` from the Analyze-stage
+commit onward, together with five real MACs (the dev board's, an access point's, a station's, and a
+pair of on-air addresses from a capture). Six substitutions were applied across all 42 commits:
 
-So before publishing, rewrite history rather than just committing a fix:
+    git filter-repo --replace-text <file>      # aa:bb:cc:dd:ee:ff -> aa:bb:cc:dd:ee:ff  (etc.)
 
-    git filter-repo --replace-text replacements.txt   # one 'old==>new' line per string
-    # then force-push, and re-check with: git log -S '<old string>' --all
+Every substitution deliberately matches the value the working tree already carried, so the rewrite
+left the checked-out content **byte-identical**. Verify that, do not assume it:
 
-Do the replacement list from the commit-message and diff scan, not from memory. Verify with
-`git log -S` for every string on the list, over `--all`, and only then flip the repo public.
+    # the tip tree must be UNCHANGED — this is the proof that only history moved
+    git rev-parse HEAD^{tree}     # 67ff754a74f3d51ff75685d626005fb678f6644d, before and after
+
+    # every old string must be gone from EVERY reachable commit
+    git log --all -S 'EAT-GUEST-WIFI' --oneline        # expect no output
+
+Run that check against a **fresh clone of the remote**, not the local repo — the local repo is
+exactly where a stale object would hide.
+
+### The residual risk: orphaned objects
+
+A force-push moves the branch; it deletes nothing. GitHub went on serving the discarded commits by
+SHA — `GET /repos/<owner>/<repo>/commits/<old-sha>` still returned `200` and the file contents,
+including the real SSID. Only someone with existing read access can reach that (it answers `404`
+unauthenticated while the repo is private), but that is **not** grounds for flipping public and
+hoping it stays unreachable.
+
+GitHub may never garbage-collect those objects. The only deterministic fix is to **delete the
+repository and recreate it under the same name**, then push the cleaned history — a repository that
+never held the objects cannot serve them. Cheap here: no stars, forks, issues or releases to lose,
+and the URL does not change.
+
+Keep the real strings out of the repo while doing any of this: the replacement list, and any
+pre-rewrite backup bundle, contain them by definition. Both live outside the tree, in `~/backups/`,
+and neither is ever staged.
 
 ## Never in the repo
 
