@@ -69,6 +69,8 @@ export const FIRMWARE_COMMANDS = new Set([
   'PROBE_REPLY_START', 'PROBE_REPLY_STOP', 'PROBE_REPLY_STATUS',
   'BEACON_POOL_START', 'BEACON_POOL_STOP', 'BEACON_POOL_STATUS',
   'PING', 'STATUS',
+  // nRF24 MouseJack — separate SPI radio, not ESP32 WiFi
+  'NRF_SEND',
 ]);
 
 /**
@@ -156,6 +158,26 @@ export const ATTACKS = [
       'Scoping here is the pool itself: the beacon builder refuses an empty name list, so there is ' +
       'no equivalent of a beacon-everything switch that could be left on by accident.',
     action: 'mana',
+  },
+  {
+    id: 'mousejack',
+    name: 'MouseJack',
+    icon: 'antenna',
+    kind: 'transmit',
+    built: 'partial',
+    tagline: 'Inject keystrokes into a Logitech Unifying receiver through the nRF24 radio.',
+    detail:
+      'The nRF24L01+ PA+LNA module bypasses the ESP32\'s WiFi entirely — it is a ' +
+      'separate 2.4 GHz radio tuned for nRF24-compatible receivers. MouseJack targets ' +
+      'Logitech Unifying receivers that accept unencrypted HID reports over nRF24. ' +
+      'The phone builds the injection frame; the S3 just sends raw bytes via SPI.',
+    needs: [],
+    firmware: 'NRF_SEND',
+    firmwareNote:
+      'The nRF24 driver is a separate SPI radio (firmware/lib/nrf24/). It sends raw ' +
+      'bytes the phone builds: receiver address + HID payload. The frame builder lives ' +
+      'here on the phone so it can be tested and updated without reflashing.',
+    action: 'mousejack',
   },
   {
     id: 'crack',

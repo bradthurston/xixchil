@@ -180,7 +180,7 @@ End-to-end test:
 1. Build firmware: pio run -e s3-n16r8
 2. Flash to S3: pio run -e s3-n16r8 -t upload
 3. Build Cordova/APK: npx cap copy && cd android && ./gradlew assembleDebug
-4. Install APK on Pixel, connect via USB-OTG
+4. Install APK on the Moto G (the only device this ships to — never the Pixel), connect via USB-OTG
 5. Tap "Start Wardrive" — verify GPS icon turns active
 6. Walk near any AP — verify S3 captures, phone detects targets, deauth fires
 7. After 30 seconds tap "Stop" — verify .22000 file saved with hashes and GPS tags

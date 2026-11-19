@@ -12,18 +12,23 @@ Pull the power on the device and it is an empty dev board — nothing stored, no
 
 ## Status
 
-**Spike, and the firmware half of the link is now proven on hardware.** The firmware is
-flashed to a real N16R8 and answering real commands over USB serial. The one thing still
-unproven is the app's USB-OTG plumbing on the phone itself.
+**The link is proven end to end on hardware.** The firmware is flashed to a real N16R8 and answering
+real commands over USB serial, and the app has opened that same board over USB-OTG on the target
+device — a stock Moto G 2025 (Android 16, no root) — completing a bidirectional protocol exchange.
 
 | | state |
 |---|---|
 | `firmware/` | builds clean, **flashed and answering on hardware** — `PING`, `STATUS`, `STAGE`, `SCAN` (live Wi-Fi scan, 9 real APs) |
 | 8 MB PSRAM | **live at runtime** — `STATUS` reports `psram_total: 8388608` |
-| `app/` | builds a 4.2 MB debug APK; its protocol layer is **byte-verified against the board** (see `tools/`) |
-| `app/` on the Pixel | **not yet run** — the last open risk, and it needs the phone |
+| `app/` | builds a 5.0 MB debug APK; its protocol layer is **byte-verified against the board** (see `tools/`) |
+| `app/` on the Moto G | **USB-OTG proven** — bidirectional exchange with the S3 works on the target device |
+| crack loop | **proven live** — captured handshake → `.22000` → bridge → passphrase, 2.0 s round trip (`tools/verify_crack.mjs` PASS 32/32; `~/.hermes/cache/scratch/probe_live_crack.mjs`) |
 
-The four-stage flow is laid out in the UI but its stages are stubs.
+**Target device is the Moto G 2025 only. This app never goes on the Pixel** (Brad's call,
+2026-11-17).
+
+The four-stage flow is laid out in the UI with capture, analysis, attack and crack wired to real
+code; the remaining gap in phase one is the on-device run of the crack loop and 5 GHz support.
 
 ## Verifying against real hardware
 

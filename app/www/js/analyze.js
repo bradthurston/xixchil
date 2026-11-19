@@ -583,3 +583,39 @@ export function findings(r) {
 
   return out;
 }
+
+/**
+ * Kaput Guard — after a deauth burst, check whether the target AP is still
+ * broadcasting. Scans raw capture chunks for beacon frames from the target
+ * BSSID. If beacons are present at normal intervals, the AP is alive and the
+ * deauth is working as expected (not kaput). If the target is completely
+ * absent from the capture, the deauth may have crashed it (true kaput).
+ *
+ * Returns { alive, beacons, chunks } where:
+ *   alive    — true if at least 1 beacon from the target was found
+ *   beacons  — count of beacon frames from the target
+ *   chunks   — total chunks scanned
+ */
+export function kaputCheck(chunks, targetBssid) {
+  if (!Array.isArray(chunks) || !targetBssid) {
+    return { alive: null, beacons: 0, chunks: 0, error: 'no chunks or no target' };
+  }
+  const t = targetBssid.toLowerCase();
+  let beacons = 0;
+  let scanned = 0;
+  for (const chunk of chunks) {
+    scanned++;
+    const f = parseChunk(chunk);
+    if (!f) continue;
+    // Beacon frame: management type, beacon subtype
+    if (f.type !== 'mgmt' || f.subtype !== 'beacon') continue;
+    // addr3 is the BSSID in beacon frames
+    if ((f.addr3 || '').toLowerCase() !== t) continue;
+    beacons++;
+  }
+  return {
+    alive: beacons > 0,
+    beacons,
+    chunks: scanned,
+  };
+}

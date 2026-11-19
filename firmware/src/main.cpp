@@ -790,13 +790,186 @@ static void cmd_nrf_send(uint8_t id, JsonDocument& args) {
 
     int ch = args["channel"] | (int)2;
     nrf24_set_channel((uint8_t)ch);
+    { const char* rt = args["rate"];
+      nrf24_set_rate(!rt ? 0x0E : (!strcmp(rt,"250k") ? 0x26
+                                  : (!strcmp(rt,"1m") ? 0x06 : 0x0E))); }
+
+    // Optional 5-byte receiver address (hex, 10 chars)
+    const char* addr_hex = args["addr"];
+    if (addr_hex) {
+        size_t an = strlen(addr_hex);
+        if (an != 10) { send_error(id, "addr must be 10 hex chars (5 bytes)"); return; }
+        uint8_t addr5[5];
+        for (int i = 0; i < 5; i++) {
+            auto nib = [](int c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return -1;
+            };
+            int hi = nib(addr_hex[i * 2]);
+            int lo = nib(addr_hex[i * 2 + 1]);
+            if (hi < 0 || lo < 0) { send_error(id, "bad addr hex char"); return; }
+            addr5[i] = (uint8_t)((hi << 4) | lo);
+        }
+        nrf24_set_tx_addr(addr5);
+    }
 
     bool ok = nrf24_send_packet(buf, bytes);
     JsonDocument d;
     d["ok"]      = ok;
     d["sent"]    = ok;
+    d["acked"]   = ok;
+    d["txst"]    = (uint32_t)nrf24_get_last_tx_status();
     d["bytes"]   = (uint32_t)bytes;
     d["channel"] = ch;
+    d["addr"]    = addr_hex ? addr_hex : "";
+    d["fifo_st"] = nrf24_get_last_fifo_status();
+    reply_json(id, true, d);
+}
+
+// Raw register dump — reads the chip WITHOUT the init liveness gate.
+// Use when nrf24_init() fails: the pattern of values tells you WHICH wire is bad.
+//   0xFF everywhere -> MISO high/floating: module absent, or VCC/GND not connected
+//   0x00 everywhere -> MISO held low: MISO shorted, or SCK/MOSI swapped
+//   healthy chip    -> STATUS 0x0E, CONFIG 0x08, SETUP_AW 0x03, RF_CH 0x02,
+//                      EN_AA 0x3F, EN_RXADDR 0x03, FIFO_STATUS 0x11
+static void cmd_nrf_raw(uint8_t id) {
+    pinMode(NRF24_CE,  OUTPUT);
+    pinMode(NRF24_CSN, OUTPUT);
+    digitalWrite(NRF24_CE,  LOW);
+    digitalWrite(NRF24_CSN, HIGH);
+    SPI.begin();  // S3 defaults: SCK=12, MOSI=11, MISO=13
+    delay(10);
+
+    JsonDocument d;
+    d["config"]      = (int)nrf24_read_reg(NRF24_REG_CONFIG);
+    d["en_aa"]       = (int)nrf24_read_reg(NRF24_REG_EN_AA);
+    d["en_rxaddr"]   = (int)nrf24_read_reg(NRF24_REG_EN_RXADDR);
+    d["setup_aw"]    = (int)nrf24_read_reg(NRF24_REG_SETUP_AW);
+    d["setup_retr"]  = (int)nrf24_read_reg(NRF24_REG_SETUP_RETR);
+    d["rf_ch"]       = (int)nrf24_read_reg(NRF24_REG_RF_CH);
+    d["rf_setup"]    = (int)nrf24_read_reg(NRF24_REG_RF_SETUP);
+    d["status"]      = (int)nrf24_read_reg(NRF24_REG_STATUS);
+    d["observe_tx"]  = (int)nrf24_read_reg(NRF24_REG_OBSERVE_TX);
+    d["rpd"]         = (int)nrf24_read_reg(NRF24_REG_RPD);
+    d["fifo_status"] = (int)nrf24_read_reg(NRF24_REG_FIFO_STATUS);
+    d["dynpd"]       = (int)nrf24_read_reg(NRF24_REG_DYNPD);
+    d["feature"]     = (int)nrf24_read_reg(NRF24_REG_FEATURE);
+
+    // A live, unconfigured nRF24L01+ answers STATUS 0x0E and SETUP_AW 0x03.
+    d["alive_guess"] = (int)(nrf24_read_reg(NRF24_REG_STATUS)   == 0x0E &&
+                             nrf24_read_reg(NRF24_REG_SETUP_AW) == 0x03);
+
+    // Addresses, read back from the chip. TX_ADDR must equal the listener's
+    // RX_ADDR_P0 or every packet goes nowhere and the ACK never comes back.
+    uint8_t a[5];
+    char ah[11];
+    nrf24_read_addr(NRF24_REG_TX_ADDR, a);
+    snprintf(ah, sizeof(ah), "%02X%02X%02X%02X%02X", a[0],a[1],a[2],a[3],a[4]);
+    d["tx_addr"] = ah;
+
+    nrf24_read_addr(NRF24_REG_RX_ADDR_P0, a);
+    snprintf(ah, sizeof(ah), "%02X%02X%02X%02X%02X", a[0],a[1],a[2],a[3],a[4]);
+    d["rx_addr_p0"] = ah;
+
+    d["ok"] = true;
+    reply_json(id, true, d);
+}
+
+// Sniff on a channel — enter RX mode, wait for a packet, report what was heard.
+static void cmd_nrf_sniff(uint8_t id, JsonDocument& args) {
+    if (!g_nrf_init_done) {
+        if (!nrf24_init()) {
+            send_error(id, "nrf24 init failed");
+            return;
+        }
+        g_nrf_init_done = true;
+    }
+
+    int ch       = args["channel"]   | (int)5;
+    int dwell_ms = args["dwell_ms"]  | (int)200;
+    if (ch < 0 || ch > 125) ch = 5;
+    if (dwell_ms < 20) dwell_ms = 20;
+    if (dwell_ms > 5000) dwell_ms = 5000;
+
+    nrf24_set_rx_opts((uint8_t)(args["pw"] | (int)32), args["dpl"] | true,
+                      args["aa"] | false);
+    { const char* rt = args["rate"];
+      nrf24_set_rate(!rt ? 0x0E : (!strcmp(rt,"250k") ? 0x26
+                                  : (!strcmp(rt,"1m") ? 0x06 : 0x0E))); }
+    nrf24_start_rx((uint8_t)ch);
+
+    // Debug: read back key registers
+    uint8_t cfg  = nrf24_read_reg(NRF24_REG_CONFIG);
+    uint8_t en_aa = nrf24_read_reg(NRF24_REG_EN_AA);
+    uint8_t en_rx = nrf24_read_reg(NRF24_REG_EN_RXADDR);
+    uint8_t setup = nrf24_read_reg(NRF24_REG_SETUP_AW);
+    uint8_t rpw0 = nrf24_read_reg(NRF24_REG_RX_PW_P0);
+    uint8_t rpw1 = nrf24_read_reg(NRF24_REG_RX_PW_P1);
+    uint8_t dynpd = nrf24_read_reg(NRF24_REG_DYNPD);
+    uint8_t feat = nrf24_read_reg(NRF24_REG_FEATURE);
+    uint8_t fifo = nrf24_read_reg(NRF24_REG_FIFO_STATUS);
+    // Read back pipe 0 address bytes
+    uint8_t addr0[5];
+    digitalWrite(NRF24_CSN, LOW);
+    SPI.transfer(NRF24_CMD_R_REGISTER | NRF24_REG_RX_ADDR_P0);
+    for (int i = 0; i < 5; i++) addr0[i] = SPI.transfer(0xFF);
+    digitalWrite(NRF24_CSN, HIGH);
+
+    // First check RPD — is there a carrier on this channel?
+    bool had_carrier = nrf24_get_rpd();
+
+    // Listen for packets
+    uint8_t rxbuf[32];
+    uint8_t rxlen = 0;
+    bool    received = false;
+    uint32_t t0 = millis();
+    while ((uint32_t)(millis() - t0) < (uint32_t)dwell_ms) {
+        if (nrf24_rx_available()) {
+            rxlen = nrf24_read_rx_payload(rxbuf, 32);
+            received = true;
+            break;
+        }
+        // Update RPD during the dwell
+        if (!had_carrier) had_carrier = nrf24_get_rpd();
+        delay(1);
+    }
+
+    nrf24_stop_rx();
+
+    // Build hex string from payload
+    char hex[65] = "";
+    if (received) {
+        for (uint8_t i = 0; i < rxlen && i < 32; i++) {
+            snprintf(hex + i * 2, 3, "%02X", rxbuf[i]);
+        }
+    }
+
+    JsonDocument d;
+    d["ok"] = true;
+    d["channel"] = ch;
+    d["dwell_ms"] = dwell_ms;
+    d["received"] = received;
+    if (received) d["len"] = rxlen;
+    if (received) d["hex"] = hex;
+    d["rpd"] = had_carrier;
+    d["dbg_rpd_reg"] = (int)nrf24_read_reg(NRF24_REG_RPD);
+    d["dbg_status"] = (int)nrf24_read_reg(NRF24_REG_STATUS);
+    d["dbg_config"] = (int)cfg;
+    d["dbg_en_aa"] = (int)en_aa;
+    d["dbg_en_rx"] = (int)en_rx;
+    d["dbg_rpw0"] = (int)rpw0;
+    d["dbg_rpw1"] = (int)rpw1;
+    d["dbg_dynpd"] = (int)dynpd;
+    d["dbg_feat"] = (int)feat;
+    d["dbg_aw"] = (int)setup;
+    d["dbg_fifo"] = (int)fifo;
+    {
+        char ahex[11];
+        snprintf(ahex, 11, "%02X%02X%02X%02X%02X", addr0[0], addr0[1], addr0[2], addr0[3], addr0[4]);
+        d["dbg_pipe0"] = ahex;
+    }
     reply_json(id, true, d);
 }
 
@@ -843,6 +1016,9 @@ static void dispatch(const uint8_t* payload, size_t len, uint8_t id) {
     else if (cmd_is(cmd, "get_segment"))    cmd_get_segment(id);
     else if (cmd_is(cmd, "channel_analyze"))      cmd_channel_analyze(id, args);
     else if (cmd_is(cmd, "channel_analyze_stop")) cmd_channel_analyze_stop(id);
+    else if (cmd_is(cmd, "nrf_send"))            cmd_nrf_send(id, args);
+    else if (cmd_is(cmd, "nrf_sniff"))           cmd_nrf_sniff(id, args);
+    else if (cmd_is(cmd, "nrf_raw"))             cmd_nrf_raw(id);
     else send_error(id, "unknown cmd");
 }
 
