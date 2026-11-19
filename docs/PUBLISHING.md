@@ -85,18 +85,22 @@ pair of on-air addresses from a capture). Six substitutions were applied across 
 Every substitution deliberately matches the value the working tree already carried, so the first pass
 left the checked-out content byte-identical; the later passes changed only this document.
 
-### The residual risk: orphaned objects
+### The residual risk: orphaned objects — RESOLVED 2026-11-19
 
 A force-push moves the branch; it deletes nothing. GitHub went on serving the discarded commits by
-SHA — `GET /repos/<owner>/<repo>/commits/<old-sha>` still returned `200` and the file contents,
-including the real SSID. Only someone with existing read access can reach that (it answers `404`
-unauthenticated while the repo is private), but that is **not** grounds for flipping public and
-hoping it stays unreachable.
+SHA — `GET /repos/<owner>/<repo>/commits/<old-sha>` returned `200`, with file contents that still
+contained the real SSID. Reachable only by someone who already had read access (it answered `404`
+unauthenticated while private), but **not** grounds for flipping public and hoping it stays that way.
 
-GitHub may never garbage-collect those objects. The only deterministic fix is to **delete the
-repository and recreate it under the same name**, then push the cleaned history — a repository that
-never held the objects cannot serve them. Cheap here: no stars, forks, issues or releases to lose,
-and the URL does not change.
+**Fixed by deleting the repository and recreating it under the same name**, then pushing the cleaned
+history — a repository that never held those objects cannot serve them. The old SHAs now answer
+**`422` (no commit found for that SHA)** where they previously answered `200`. Same URL, same
+description, same visibility; nothing lost (0 stars, forks, issues, releases).
+
+`tools/recreate-remote.sh` performs the recreate-and-verify half — fresh-clone re-scan on all three
+surfaces, plus the old-SHA check — and refuses to run while the old repo still exists. Deletion is the
+one step it cannot do: a classic token needs the **`delete_repo` scope**, since `repo` alone is
+refused ("Must have admin rights to Repository"). Delete via Settings -> Danger Zone, or add the scope.
 
 Keep the real strings out of the repo while doing any of this: the replacement list, and any
 pre-rewrite backup bundle, contain them by definition. Both live outside the tree, in `~/backups/`,
