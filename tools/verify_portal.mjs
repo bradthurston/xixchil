@@ -42,6 +42,7 @@ const {
   encodeDnsName, parseDnsQuestion, buildDnsHijackResponse, DNS_TYPE,
   portalPageChunks, joinPortalChunks, parsePortalSubmission,
   portalArm, PORTAL_ARM_TOKEN, PORTAL_DISARMED,
+  WIFI_AUTH, twinRejectReason, rankTwinCandidates, selectTwinTarget, nextPortalAction,
 } = P;
 
 const URI = 'http://192.168.4.1/portal';
@@ -350,6 +351,113 @@ check('an empty label is refused', throws(() => encodeDnsName('a..b')));
   check('problems are all reported, not just the first',
     portalArm({ ssid: '', channel: 99, acknowledge: 'nope' }).problems.length === 3,
     JSON.stringify(portalArm({ ssid: '', channel: 99, acknowledge: 'nope' }).problems));
+}
+
+// ── 8. seeding the twin from the air ──────────────────────────────────────
+{
+  const scan = [
+    { ssid: 'Cafe-Guest', bssid: 'aa:bb:cc:00:00:01', rssi: -41, ch: 6, auth: 3 },  // wpa2_psk
+    { ssid: 'Cafe-Guest', bssid: 'aa:bb:cc:00:00:02', rssi: -70, ch: 6, auth: 3 },  // same SSID, second radio
+    { ssid: 'FrontDesk', bssid: 'aa:bb:cc:00:00:03', rssi: -55, ch: 11, auth: 4 },  // wpa/wpa2
+    { ssid: 'OpenLobby', bssid: 'aa:bb:cc:00:00:04', rssi: -30, ch: 1, auth: 0 },   // open
+    { ssid: 'OldRouter', bssid: 'aa:bb:cc:00:00:05', rssi: -80, ch: 1, auth: 1 },   // wep
+    { ssid: 'ModernHome', bssid: 'aa:bb:cc:00:00:06', rssi: -44, ch: 6, auth: 6 },  // wpa3 only
+    { ssid: 'OfficeWiFi', bssid: 'aa:bb:cc:00:00:07', rssi: -60, ch: 11, auth: 5 }, // enterprise
+    { ssid: '', bssid: 'aa:bb:cc:00:00:08', rssi: -50, ch: 6, auth: 3 },            // hidden
+    { ssid: 'FiveGig', bssid: 'aa:bb:cc:00:00:09', rssi: -38, ch: 36, auth: 3 },    // 5 GHz
+    { ssid: 'NoRssi', bssid: 'aa:bb:cc:00:00:0a', rssi: null, ch: 1, auth: 3 },     // unknown signal
+  ];
+  const byName = (list, n) => list.find((c) => c.ssid === n);
+
+  const ranked = rankTwinCandidates(scan);
+  check('ranking returns every AP', ranked.length === scan.length, String(ranked.length));
+  check('ranking sorts strongest first', ranked[0].rssi === -30, JSON.stringify(ranked[0]));
+  check('an UNKNOWN rssi sorts last, not as 0 dBm', ranked[ranked.length - 1].ssid === 'NoRssi', ranked[ranked.length - 1].ssid);
+  check('the open AP is flagged not cloneable', byName(ranked, 'OpenLobby').cloneable === false);
+  check('...and says why in plain words', /nothing to crack/.test(byName(ranked, 'OpenLobby').why));
+  check('WPA3-only is refused, naming SAE', /SAE/.test(byName(ranked, 'ModernHome').why), byName(ranked, 'ModernHome').why);
+  check('enterprise is refused as 802.1X', /802\.1X/.test(byName(ranked, 'OfficeWiFi').why));
+  check('the 5 GHz AP is refused on the S3 radio', /2\.4 GHz/.test(byName(ranked, 'FiveGig').why));
+  check('the hidden AP is refused', /hidden/.test(byName(ranked, '').why));
+  check('WEP is refused as the wrong tool', /wrong tool/.test(byName(ranked, 'OldRouter').why));
+  check('onlyCloneable keeps just the WPA-PSK set',
+    rankTwinCandidates(scan, { onlyCloneable: true }).every((c) => c.cloneable));
+
+  check('selection REFUSES with no target named — it ranks, it does not choose',
+    selectTwinTarget(scan, {}).ok === false);
+  const sel = selectTwinTarget(scan, { ssid: 'FrontDesk' });
+  check('a named cloneable AP is selected', sel.ok === true, sel.reason);
+  check('the twin takes the target SSID', sel.twin.ssid === 'FrontDesk');
+  check('the twin takes the target BSSID', sel.twin.bssid === 'aa:bb:cc:00:00:03');
+  check("the twin's channel is FORCED to the target's (one radio)", sel.twin.channel === 11, String(sel.twin.channel));
+  check('the selection says out loud that a scan shows no clients', /never its clients/.test(sel.note));
+
+  check('an AP not in the scan is REFUSED, never substituted for',
+    selectTwinTarget(scan, { ssid: 'NotHere' }).ok === false);
+  check('...and the refusal names what was asked for',
+    /NotHere/.test(selectTwinTarget(scan, { ssid: 'NotHere' }).reason));
+  check('a refused AP yields NO twin at all', selectTwinTarget(scan, { ssid: 'OpenLobby' }).twin === undefined);
+  check('picking an open AP is refused', selectTwinTarget(scan, { ssid: 'OpenLobby' }).ok === false);
+  check('picking a WPA3-only AP is refused', selectTwinTarget(scan, { ssid: 'ModernHome' }).ok === false);
+  check('picking the 5 GHz AP is refused', selectTwinTarget(scan, { ssid: 'FiveGig' }).ok === false);
+
+  const ambiguous = selectTwinTarget(scan, { ssid: 'Cafe-Guest' });
+  check('one SSID on two BSSIDs is REFUSED rather than picked for you', ambiguous.ok === false);
+  check('...and it offers the candidates instead', Array.isArray(ambiguous.candidates) && ambiguous.candidates.length === 2);
+  check('naming the BSSID resolves the ambiguity',
+    selectTwinTarget(scan, { ssid: 'Cafe-Guest', bssid: 'aa:bb:cc:00:00:02' }).ok === true);
+
+  check('a malformed BSSID is refused', /not a MAC/.test(twinRejectReason({ ssid: 'x', bssid: 'nope', ch: 1, auth: 3 })));
+  check('a group-address BSSID is refused', /group address/.test(twinRejectReason({ ssid: 'x', bssid: '01:00:5e:00:00:01', ch: 1, auth: 3 })));
+  check('channel 0 is refused', /2\.4 GHz/.test(twinRejectReason({ ssid: 'x', bssid: 'aa:bb:cc:00:00:01', ch: 0, auth: 3 })));
+}
+
+// ── 9. portal-up-then-deauth, enforced rather than hoped for ──────────────
+{
+  const targets = ['aa:bb:cc:00:00:01'];
+
+  check('with nothing up, the first move is to bring the twin up',
+    nextPortalAction({}).action === 'bring_up_twin');
+  const wait = nextPortalAction({ twinUp: true, twinBeaconConfirmed: false, deauthTargets: targets });
+  check('twin up but NOT confirmed -> wait, even holding targets', wait.action === 'wait_for_beacon', wait.action);
+  check('...and the reason names the race it is avoiding', /finds the real one/.test(wait.reason), wait.reason);
+  check('confirmed + targets -> deauth',
+    nextPortalAction({ twinUp: true, twinBeaconConfirmed: true, deauthTargets: targets }).action === 'deauth');
+  check('confirmed but nothing to knock off -> scan for clients',
+    nextPortalAction({ twinUp: true, twinBeaconConfirmed: true, deauthTargets: [] }).action === 'scan_for_clients');
+
+  // THE property, exhaustively over the other flags: no combination can produce
+  // a deauth while the twin is unconfirmed. A single hand-picked case would miss
+  // the combination that leaks.
+  let leaked = null;
+  for (const twinUp of [false, true]) {
+    for (const tg of [[], targets]) {
+      for (const rounds of [0, 1, 5, 9]) {
+        for (const landed of [0, 1, 3]) {
+          for (const creds of [0, 2]) {
+            const st = {
+              twinUp, twinBeaconConfirmed: false, deauthTargets: tg,
+              deauthRounds: rounds, clientsLanded: landed, credentialsCaptured: creds,
+            };
+            if (nextPortalAction(st).action === 'deauth') leaked = st;
+          }
+        }
+      }
+    }
+  }
+  check('EXHAUSTIVE: no unconfirmed-twin state can emit a deauth', leaked === null, JSON.stringify(leaked));
+
+  const spent = nextPortalAction({ twinUp: true, twinBeaconConfirmed: true, deauthTargets: targets, deauthRounds: 5 });
+  check('giving up after the round cap is NOT an allowed action', spent.allowed === false, spent.action);
+  check('...and it says stop rather than hammer', /stop rather than hammer/.test(spent.reason), spent.reason);
+  check('a landed client means serve the page',
+    nextPortalAction({ twinUp: true, twinBeaconConfirmed: true, deauthTargets: targets, deauthRounds: 1, clientsLanded: 1 }).action === 'serve_portal');
+  check('every action carries a reason', [
+    {}, { twinUp: true }, { twinUp: true, twinBeaconConfirmed: true },
+    { twinUp: true, twinBeaconConfirmed: true, deauthTargets: targets },
+    { twinUp: true, twinBeaconConfirmed: true, deauthTargets: targets, deauthRounds: 9 },
+    { twinUp: true, twinBeaconConfirmed: true, deauthTargets: targets, clientsLanded: 1 },
+  ].every((s) => typeof nextPortalAction(s).reason === 'string' && nextPortalAction(s).reason.length > 0));
 }
 
 // ── report ─────────────────────────────────────────────────────────────────

