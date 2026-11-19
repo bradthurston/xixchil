@@ -12,9 +12,8 @@ phone (Marauder, Bruce, GhostESP, HaleHound, Flipper + devboard), or a laptop to
 (airgeddon, wifite, Kismet, WiFi Pineapple). Ours is the one where the thing you carry is a
 blank board with nothing stored on it, and the interface is the phone already in your pocket.
 
-The product requirement, stated plainly:
-*"it needs to look like you are on your phone not messing with a frankenstein of pcb's and wires
-looking shady."*
+The product requirement, stated plainly: while you work, it should look like you are looking at a
+phone — not holding a bundle of boards, wires and antennae that reads as suspicious.
 
 ## The field, honestly
 
