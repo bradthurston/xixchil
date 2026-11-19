@@ -4,7 +4,7 @@ Working title. An ESP32-S3 as a **headless radio**; an Android phone as the enti
 interface, the entire storage, and the entire script library. No screen, no buttons, no
 cable, no SD card, no on-device payloads.
 
-The device persists nothing. Pull power and it is an empty dev board.
+The board persists nothing. Pull power and it comes up clean.
 
 ## The constraint that shapes the whole build
 

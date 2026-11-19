@@ -1,7 +1,7 @@
 // Xixchil — firmware
 //
-// A headless ESP32-S3 radio. The phone is the UI, the disk and the brain.
-// The device persists nothing: pull power and it is an empty dev board.
+// A headless ESP32-S3 radio. The phone is the UI, the disk and the GPU.
+// The board persists nothing: pull power and it comes up clean.
 //
 // ── THE CONSTRAINT THIS BUILD IS SHAPED AROUND ──────────────────────────────
 // ESP32-S3 has ONE 2.4 GHz RF module, time-division multiplexed between Wi-Fi

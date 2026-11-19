@@ -11,15 +11,31 @@ Neither half is much use on its own, which is the point.
 
 ## The name
 
-**Xixchil** is the mantis-folk of Spelljammer — an ambush predator. That is this tool's whole arc:
-sit quiet on the air, lure or strike, capture what you came for.
+Xixchil is the mantis-folk of Spelljammer. Before it is anything else, it is the mantis: the
+insect standing on a stem, motionless, swaying with the breeze exactly the way the leaf it is
+standing on sways. Nothing about it reads as dangerous. It is not chasing. It is not even
+hunting, as far as you can see. It is waiting for the world to come into range, and it will wait
+longer than you will watch.
+
+Then, once, it stops being a leaf.
+
+That is the whole shape of this tool. It sits on the air and listens — passive capture needs no
+injection, so by default it transmits nothing at all and simply takes what drifts past: beacons,
+probes, a client reconnecting to a network it already knows. Somewhere in that drift is a
+four-way handshake. The stillness is the setup. The strike is the capture, it is over in
+milliseconds, and then it goes quiet again.
+
+The other half of the name is the surgeon. The Xixchil of Spelljammer graft onto themselves —
+*"Xixchil surgeons can accomplish amazing transformations"* — and the board here does the same
+thing. It has no screen, no storage, no keyboard of its own. It grafts on the phone's.
 
 | The mantis | Xixchil |
 |---|---|
-| Sits motionless against the leaf, invisible until it isn't | Passive first. PMKID needs no injection, so the default is to listen rather than shout |
-| Forelegs folded in what reads as prayer — actually a weapon, held still | It looks like a person looking at their phone. That is the whole point of the form factor |
-| One strike, from stillness. No chase. | A handshake is captured, and the crack loop closes it in seconds |
-| An insect surgeon that grafts what it needs onto itself | The board is a blank donor: it stores nothing and grafts on the phone's screen, storage and GPU |
+| Sits motionless on the stem, swaying with the wind like the leaf it stands on | Sits on the air and listens. Passive capture needs no injection, so the default is to transmit nothing at all |
+| Reads as nothing. Not a threat, not a hunter, not a device | It looks like a person looking at their phone — which is the entire point of the form factor |
+| Will wait longer than you will watch | A monitor runs for as long as the battery does, collecting whatever drifts past |
+| One strike, from total stillness, over in milliseconds | The handshake is taken in the moment a client reconnects, and the crack loop closes it in seconds |
+| An insect surgeon that grafts what it needs onto itself | A blank donor: no screen, no storage, no keyboard. It grafts on the phone's |
 | Eats what it catches | The passphrase comes back on the screen |
 
 The name is a shibboleth. If that comparison lands for you, you are the audience.
