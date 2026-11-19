@@ -4,13 +4,14 @@ Written 2026-11-17. Grounded in the code and firmware state in this repo, not as
 
 ## The claim
 
-**The radio is a disposable brick. The phone is the whole product — screen, disk, brain, and
-the GPU that cracks the handshake.**
+**A bare board does the radio work. The phone you already carry is the interface, the disk, and
+the GPU that cracks the handshake. Two halves, and neither is much use on its own.**
 
 Every other tool in this space is either a device-with-a-screen you carry *in addition to* your
 phone (Marauder, Bruce, GhostESP, HaleHound, Flipper + devboard), or a laptop toolkit
-(airgeddon, wifite, Kismet, WiFi Pineapple). Ours is the one where the thing you carry is a
-blank board with nothing stored on it, and the interface is the phone already in your pocket.
+(airgeddon, wifite, Kismet, WiFi Pineapple). Ours is the one where the board is the radio and the
+phone already in your pocket is the screen, the storage and the crack — no second screen, no
+second computer.
 
 The product requirement, stated plainly: while you work, it should look like you are looking at a
 phone — not holding a bundle of boards, wires and antennae that reads as suspicious.
@@ -31,8 +32,9 @@ Do not sell these. They are the price of entry.
 
 ## What is actually different (defensible)
 
-1. **Nothing persists on the device.** No SD card, no config, no logs, no payloads. Pull power
-   and it is an empty dev board. Marauder/Bruce/Flipper all log to SD. NRSuite stores on the
+1. **Nothing persists on the radio.** No SD card, no config, no logs, no payloads — the board
+   comes up clean every time, so nothing is left behind on the hardware. Marauder/Bruce/Flipper
+   all log to SD. NRSuite stores on the
    phone but is a Python/Termux toolkit you have to configure.
 2. **The crack is inside the same flow.** Capture → handshake extract → `.22000` → GPU bridge
    → passphrase, displayed in the app. Measured on the bridge: RTX 3060 at **~330 kH/s**, whole
@@ -107,7 +109,7 @@ Do not win on feature count — a community firmware team will always out-list u
 Marauder vs GhostESP arguments are not winnable from a three-person bench. Win one workflow
 completely:
 
-> **The phone you already carry does all of it, the board is disposable, and the answer comes
+> **The board is the radio. The phone you already carry is everything else — and the answer comes
 > back on the screen.**
 
 Fastest path from standing in a parking lot to "here is the password and here is the report."

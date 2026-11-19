@@ -2,7 +2,7 @@
 
 Goal: One-button wardrive mode — continuous capture + auto-deauth + GPS-tagged hash collection, all driven from the phone.
 
-Architecture: Phone orchestrates everything — GPS, target selection, deauth commands, hash extraction, mapping. S3 is a dumb radio running one of two modes: (a) guided 4-stage flow (existing), (b) continuous capture with on-command deauth bursts (new). The phone analyzes pcap segments in real-time and feeds target decisions back to the S3.
+Architecture: Phone orchestrates everything — GPS, target selection, deauth commands, hash extraction, mapping. The S3 is the radio, running one of two modes: (a) guided 4-stage flow (existing), (b) continuous capture with on-command deauth bursts (new). The phone analyzes pcap segments in real-time and feeds target decisions back to the S3.
 
 Tech Stack: C++17 (PlatformIO / IDF 5.5), Capacitor 8 Android (raw JS/HTML), GPS via Capacitor Geolocation plugin.
 
