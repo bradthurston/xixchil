@@ -53,27 +53,37 @@ history, and a public clone can reach any commit, not just the tip.
 **DONE — history was rewritten on 2026-11-19, while this repo was still private.** The real SSID of
 the network the captures came from sat inside `tools/verify_analyze.mjs` from the Analyze-stage
 commit onward, together with five real MACs (the dev board's, an access point's, a station's, and a
-pair of on-air addresses from a capture). Six substitutions were applied across all 42 commits:
+pair of on-air addresses from a capture). Six substitutions were applied across every commit:
 
-    git filter-repo --replace-text <file>      # each real value -> a synthetic one
-                                               # e.g. <device-mac> -> aa:bb:cc:dd:ee:ff
+    git filter-repo --replace-text <file>        # each real value -> a synthetic one,
+                                                 # e.g. <device-mac> -> aa:bb:cc:dd:ee:ff
+    git filter-repo --replace-message <file>     # AND the same file again, for commit messages
 
-Every substitution deliberately matches the value the working tree already carried, so the rewrite
-left the checked-out content **byte-identical**. Verify that, do not assume it:
+### Four traps, every one of which bit during the real purge
 
-    # the tip tree must be UNCHANGED — this is the proof that only history moved
-    git rev-parse HEAD^{tree}     # 67ff754a74f3d51ff75685d626005fb678f6644d, before and after
+1. **`--replace-text` does not touch commit messages.** Messages are a separate stream. A board MAC
+   written into a commit body (`Verified on hardware: ... MAC <device-mac> ...`) survived the first
+   pass untouched and needed `--replace-message`. Check both.
+2. **Documenting the purge re-commits the values.** The first version of this section quoted the
+   real MAC and the real SSID as worked examples, and had to be purged a second time. Write
+   `<device-mac>` and `<the-real-ssid>`; a placeholder carries the instruction just as well.
+3. **Check the working tree, not only history.** Trap 2 landed in a *new* commit, so a history-only
+   scan of the rewritten commits looked clean while the tip was dirty. Scan both.
+4. **Verify against a fresh clone of the remote.** The local repo is exactly where a stale object
+   hides, and it is the remote that has to be clean.
 
-    # every old string must be gone from EVERY reachable commit
-    git log --all -S '<the-real-ssid>' --oneline        # expect no output
+    # the tip tree must equal its pre-rewrite value - proof the content itself did not move
+    git rev-parse HEAD^{tree}      # was 67ff754a74f3d51ff75685d626005fb678f6644d at the first pass
 
-Run that check against a **fresh clone of the remote**, not the local repo — the local repo is
-exactly where a stale object would hide.
+    # every old string, on all three surfaces, in a CLONE - each must print 0
+    for v in <the six values>; do
+      git grep -lI --fixed-strings "$v" | wc -l                        # working tree
+      git grep -lI --fixed-strings "$v" $(git rev-list --all) | wc -l  # every blob in history
+      git log --all --grep="$v" --oneline | wc -l                      # every commit message
+    done
 
-**Never write the real values into this file, or into any documentation of the scrub.** Naming a
-value in prose is the same as committing it: the first version of this section quoted the real MAC
-and the real SSID as examples and had to be re-purged from history. Use `<device-mac>`,
-`<the-real-ssid>` — a placeholder carries the instruction just as well.
+Every substitution deliberately matches the value the working tree already carried, so the first pass
+left the checked-out content byte-identical; the later passes changed only this document.
 
 ### The residual risk: orphaned objects
 
