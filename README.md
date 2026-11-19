@@ -2,12 +2,12 @@
 
 **ZIK-chel**
 
-> **The radio is a disposable brick. The phone is the whole product — screen, disk, brain, and
-> the GPU that cracks the handshake.**
+*Capture, analyze and crack WPA handshakes from your phone.*
 
-Xixchil turns a bare ESP32-S3 and the phone already in your pocket into a Wi-Fi assessment
-console. The board captures. The phone does everything else. Pull the power on the board and it
-is an empty dev board — no SD card, no config, no logs, nothing to find.
+Xixchil splits the job between two halves that are each good at different things. A bare ESP32-S3
+does the radio work — capture, injection, the frames themselves. The phone in your pocket does the
+rest: the interface, the storage, and the GPU that turns a captured handshake into a passphrase.
+Neither half is much use on its own, which is the point.
 
 ## The name
 
@@ -71,8 +71,8 @@ everyone has these. They are the price of entry, not a feature list.
 
 What is actually ours:
 
-- **Nothing persists on the device.** No SD card, no config, no logs, no payloads. Power down and
-  it is a dev board.
+- **Nothing persists on the radio.** No SD card, no config, no logs, no payloads — the board comes
+  up clean every time, and so does the next engagement.
 - **The crack is inside the same flow.** NRSuite *exports* a hashcat file and stops — you still
   need a PC, hashcat and the knowledge. Marauder, Bruce and Flipper do not crack at all.
 - **It is an app, not a CLI.** NRSuite's real power lives behind Termux and an SSH session.
