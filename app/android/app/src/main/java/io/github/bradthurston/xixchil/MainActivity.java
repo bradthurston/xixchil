@@ -1,4 +1,4 @@
-package com.bradthurston.phoneradio;
+package io.github.bradthurston.xixchil;
 
 import android.content.Intent;
 import android.os.Bundle;
@@ -8,7 +8,7 @@ import com.getcapacitor.BridgeActivity;
 /**
  * The app's entry point, extended for one reason: a capture can arrive from outside it.
  *
- * "Share → Radio Console", or opening a .22000 / .pcap from a file manager, delivers the
+ * "Share → Xixchil", or opening a .22000 / .pcap from a file manager, delivers the
  * file as an intent. Both a cold start (onCreate) and a share into the running app
  * (onNewIntent — the activity is singleTask, so Android reuses it) are stashed for the
  * plugin to hand to JS. Nothing is parsed here; this only makes sure the file is not

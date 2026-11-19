@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Radio Console</string>
-    <string name="title_activity_main">Radio Console</string>
-    <string name="package_name">com.bradthurston.phoneradio</string>
-    <string name="custom_url_scheme">com.bradthurston.phoneradio</string>
+    <string name="app_name">Xixchil</string>
+    <string name="title_activity_main">Xixchil</string>
+    <string name="package_name">io.github.bradthurston.xixchil</string>
+    <string name="custom_url_scheme">io.github.bradthurston.xixchil</string>
 </resources>

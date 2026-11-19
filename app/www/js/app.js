@@ -845,7 +845,7 @@ const PRESETS_KEY = 'attackPresets';
 
 /** Common default/router SSIDs for quick-fill in Karma & Mana. */
 const COMMON_DEFAULT_SSIDS = [
-  'CXNK*', 'NETGEAR', 'Linksys', 'xfinitywifi', 'attwifi',
+  'NETGEAR', 'Linksys', 'xfinitywifi', 'attwifi',
   'T-Mobile', 'SpectrumWiFi', 'Verizon', 'COX', 'OptimumWiFi',
   'CenturyLink', 'Starbucks WiFi',
 ];
@@ -2029,7 +2029,7 @@ async function onImportPickBytes(bytes, name) {
   }
 }
 
-/** Pick up a capture another app shared in (Android's "Share → Radio Console"). */
+/** Pick up a capture another app shared in (Android's "Share → Xixchil"). */
 async function checkSharedCapture() {
   try {
     return await takeSharedCapture(({ name, bytes }) => {

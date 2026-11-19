@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-PKG=com.bradthurston.phoneradio
+PKG=io.github.bradthurston.xixchil
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$HERE/../app"
 APK="$APP/android/app/build/outputs/apk/debug/app-debug.apk"

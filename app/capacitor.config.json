@@ -1,6 +1,6 @@
 {
-  "appId": "com.bradthurston.phoneradio",
-  "appName": "Radio Console",
+  "appId": "io.github.bradthurston.xixchil",
+  "appName": "Xixchil",
   "webDir": "www",
   "server": {
     "androidScheme": "https"

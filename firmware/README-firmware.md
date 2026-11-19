@@ -1,4 +1,4 @@
-# S3 Phone Radio Console — firmware
+# Xixchil — firmware
 
 Working title. An ESP32-S3 as a **headless radio**; an Android phone as the entire
 interface, the entire storage, and the entire script library. No screen, no buttons, no

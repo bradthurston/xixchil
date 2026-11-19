@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- USB devices that should offer to open Radio Console on attach.
+<!-- USB devices that should offer to open Xixchil on attach.
      Kept narrow on purpose: the ESP32-S3 exposes three relevant VID/PID pairs
      depending on which port is used and which firmware is flashed. -->
 <resources>

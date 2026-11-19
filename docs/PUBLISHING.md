@@ -24,7 +24,7 @@ are enforced **before** the switch is flipped, not after.
    which session. No "X's call, \<date\>", no "verbatim", no attribution of a design choice to a
    person. The engineering reason is the interesting part anyway.
 5. **Commits use the GitHub noreply address.** Public history is permanent, so a personal email
-   does not go into it. Author as `bradthurston <284634991+bradthurston@users.noreply.github.com>`.
+   does not go into it. Author as `bradthurston <bradthurston@users.noreply.github.com>`.
 6. **Screenshots carry no personal identity.** No real SSID, no real BSSID, no account name, no
    device identifier, no personal status-bar content, no faces. Stage a synthetic network for the
    shot; if a screenshot cannot be staged, it does not go in the README.

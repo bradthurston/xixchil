@@ -1,4 +1,4 @@
-package com.bradthurston.phoneradio;
+package io.github.bradthurston.xixchil;
 
 import android.content.Context;
 import android.content.Intent;

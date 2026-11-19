@@ -1,6 +1,6 @@
 // native-import.js — the phone's own door for a capture shared from another app.
 //
-// "Share → Radio Console" hands the app a content:// URI, not a File. The native side
+// "Share → Xixchil" hands the app a content:// URI, not a File. The native side
 // copies the bytes and this asks for them once; the bytes then go into the same
 // importer the file picker feeds, so a shared capture and a picked one take exactly
 // one code path — there is no second import implementation to drift.

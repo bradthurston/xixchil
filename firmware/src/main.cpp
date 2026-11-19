@@ -1,4 +1,4 @@
-// S3 Phone Radio Console — firmware
+// Xixchil — firmware
 //
 // A headless ESP32-S3 radio. The phone is the UI, the disk and the brain.
 // The device persists nothing: pull power and it is an empty dev board.

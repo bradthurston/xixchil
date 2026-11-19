@@ -33,7 +33,7 @@
                 android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
                 android:resource="@xml/device_filter" />
 
-            <!-- Import: "Share → Radio Console" from another app (NRSuite's portal
+            <!-- Import: "Share → Xixchil" from another app (NRSuite's portal
                  export, a file manager, a browser download). A shared file arrives as
                  a content:// URI with a temporary read grant, so no storage permission
                  is involved. Restricted to the capture and hash types rather than */*

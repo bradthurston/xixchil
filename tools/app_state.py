@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read or write the Radio Console WebView's localStorage from the PC, over CDP.
+"""Read or write the Xixchil WebView's localStorage from the PC, over CDP.
 
 Why this exists
 ---------------
@@ -44,7 +44,7 @@ try:
 except ImportError:
     sys.exit("needs websocket-client:  pip install --user websocket-client")
 
-PKG = "com.bradthurston.phoneradio"
+PKG = "io.github.bradthurston.xixchil"
 LOCAL_PORT = int(os.environ.get("APP_STATE_PORT", "9333"))
 
 

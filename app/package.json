@@ -1,5 +1,5 @@
 {
-  "name": "phone-radio-console",
+  "name": "xixchil",
   "version": "0.1.0",
   "private": true,
   "description": "Phone console for a headless ESP32 radio. Capture, analyze, crack.",
