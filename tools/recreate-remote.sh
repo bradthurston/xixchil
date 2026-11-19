@@ -26,8 +26,11 @@ NAME="${REPO#*/}"
 DESC="Headless ESP32-S3 radio driven by a Capacitor phone console. Capture, analyze, crack."
 MAP="${HOME}/backups/xixchil-replacements.txt"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DRY=0
-[ "${1:-}" = "--dry-run" ] && DRY=1
+DRY=0; VERIFY_ONLY=0
+case "${1:-}" in
+  --dry-run)     DRY=1 ;;
+  --verify-only) VERIFY_ONLY=1 ;;
+esac
 
 TOK="$(sed -n 's/^GITHUB_TOKEN=//p' "${HOME}/.hermes/.env" | head -1 | tr -d '"'"'"'"')"
 [ -n "$TOK" ] || { echo "no GITHUB_TOKEN in ~/.hermes/.env"; exit 1; }
@@ -40,12 +43,12 @@ export GHTOK="$TOK"
 echo "== 1. is the old repository gone? =="
 code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${TOK}" "https://api.github.com/repos/${REPO}")"
 echo "   GET /repos/${REPO} -> HTTP ${code}"
-if [ "$code" != "404" ]; then
+if [ "$code" != "404" ] && [ "$VERIFY_ONLY" = 0 ]; then
   echo "   STILL THERE. Delete it first — that is the whole point of this script."
   echo "   (UI: github.com/${REPO}/settings -> Danger Zone -> Delete this repository)"
   exit 2
 fi
-echo "   gone. the discarded objects went with it."
+[ "$code" = "404" ] && echo "   gone. the discarded objects went with it."
 
 echo "== 2. working tree must be the purged history =="
 cd "$ROOT"
@@ -53,8 +56,8 @@ echo "   HEAD    $(git rev-parse --short HEAD)  ($(git rev-list --count HEAD) co
 [ -z "$(git status --porcelain)" ] || { echo "   working tree dirty — commit first"; exit 3; }
 
 echo "== 3. create ${REPO} =="
-if [ "$DRY" = 1 ]; then
-  echo "   [dry-run] POST /user/repos {name:${NAME}, private:true, description:...}"
+if [ "$DRY" = 1 ] || [ "$VERIFY_ONLY" = 1 ]; then
+  echo "   [skip] POST /user/repos {name:${NAME}, private:true, description:...}"
 else
   out="$(auth -X POST https://api.github.com/user/repos \
     -d "{\"name\":\"${NAME}\",\"private\":true,\"description\":\"${DESC}\",\"has_wiki\":false,\"has_projects\":true}")"
@@ -64,8 +67,8 @@ fi
 
 echo "== 4. push the purged history =="
 git remote set-url origin "https://github.com/${REPO}.git"
-if [ "$DRY" = 1 ]; then
-  echo "   [dry-run] git push -u origin main"
+if [ "$DRY" = 1 ] || [ "$VERIFY_ONLY" = 1 ]; then
+  echo "   [skip] git push -u origin main"
 else
   gitok push -u origin main 2>&1 | tail -2
 fi
@@ -78,13 +81,16 @@ D="$(mktemp -d)"; trap 'rm -rf "$D"' EXIT
 gitok clone --quiet "https://github.com/${REPO}.git" "$D"
 cd "$D"
 echo "   tip $(git log --oneline -1) — $(git rev-list --count HEAD) commits, $(git ls-files | wc -l) files"
-tot=0
+tot=0; i=0
 while IFS= read -r v; do
   [ -n "$v" ] || continue
-  a=$(git grep -lI --fixed-strings "$v" 2>/dev/null | wc -l)
-  b=$(git grep -lI --fixed-strings "$v" $(git rev-list --all) 2>/dev/null | wc -l)
-  c=$(git log --all --grep="$v" --oneline 2>/dev/null | wc -l)
-  tot=$((tot+a+b+c)); printf '   value %d: wt=%s blob=%s msg=%s\n' "$((++i))" "$a" "$b" "$c"
+  i=$((i+1))
+  # `git grep` exits 1 on no match, which under `set -e -o pipefail` would abort the script —
+  # and "no match" is the result we are hoping for. Swallow it explicitly.
+  a=$( { git grep -lI --fixed-strings "$v" 2>/dev/null || true; } | wc -l )
+  b=$( { git grep -lI --fixed-strings "$v" $(git rev-list --all) 2>/dev/null || true; } | wc -l )
+  c=$( { git log --all --grep="$v" --oneline 2>/dev/null || true; } | wc -l )
+  tot=$((tot+a+b+c)); printf '   value %d: wt=%s blob=%s msg=%s\n' "$i" "$a" "$b" "$c"
 done < <(awk -F'==>' '{print $1}' "$MAP")
 echo "   TOTAL HITS: ${tot}  $([ "$tot" -eq 0 ] && echo '<-- clean' || echo '<-- STILL LEAKING')"
 echo
