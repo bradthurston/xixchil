@@ -9,6 +9,21 @@ Xixchil turns a bare ESP32-S3 and the phone already in your pocket into a Wi-Fi 
 console. The board captures. The phone does everything else. Pull the power on the board and it
 is an empty dev board — no SD card, no config, no logs, nothing to find.
 
+## The name
+
+**Xixchil** is the mantis-folk of Spelljammer — an ambush predator. That is this tool's whole arc:
+sit quiet on the air, lure or strike, capture what you came for.
+
+| The mantis | Xixchil |
+|---|---|
+| Sits motionless against the leaf, invisible until it isn't | Passive first. PMKID needs no injection, so the default is to listen rather than shout |
+| Forelegs folded in what reads as prayer — actually a weapon, held still | It looks like a person looking at their phone. That is the whole point of the form factor |
+| One strike, from stillness. No chase. | A handshake is captured, and the crack loop closes it in seconds |
+| An insect surgeon that grafts what it needs onto itself | The board is a blank donor: it stores nothing and grafts on the phone's screen, storage and GPU |
+| Eats what it catches | The passphrase comes back on the screen |
+
+The name is a shibboleth. If that comparison lands for you, you are the audience.
+
 ## The comparison
 
 Most tools in this space ask you to carry a second computer — a gadget with a one-inch screen, a
