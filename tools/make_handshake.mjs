@@ -263,20 +263,9 @@ export function buildHandshake({
 }
 
 // ── reading a pcap back into chunks ──────────────────────────────────────────
-
-/** Split a libpcap image back into its radiotap+frame records. */
-export function chunksFromPcap(bytes) {
-  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
-  if (dv.getUint32(0, true) !== 0xa1b2c3d4) throw new Error('not a libpcap file');
-  const out = [];
-  let off = 24;
-  while (off + 16 <= b.length) {
-    const incl = dv.getUint32(off + 8, true);
-    off += 16;
-    if (off + incl > b.length) break;
-    out.push(b.subarray(off, off + incl));
-    off += incl;
-  }
-  return out;
-}
+//
+// The reader lives in the app now (app/www/js/pcap.js) because the import path needs
+// it on the phone, and two copies of a parser is one copy too many: they drift, and
+// the drift shows up as a file that reads correctly in one place and not the other.
+// Re-exported here so this file's callers are unchanged.
+export { chunksFromPcap } from '../app/www/js/pcap.js';

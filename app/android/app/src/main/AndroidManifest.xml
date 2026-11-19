@@ -33,6 +33,43 @@
                 android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
                 android:resource="@xml/device_filter" />
 
+            <!-- Import: "Share → Radio Console" from another app (NRSuite's portal
+                 export, a file manager, a browser download). A shared file arrives as
+                 a content:// URI with a temporary read grant, so no storage permission
+                 is involved. Restricted to the capture and hash types rather than */*
+                 so the app does not appear in every share sheet on the phone. -->
+            <intent-filter android:label="@string/app_name">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/vnd.tcpdump.pcap" />
+                <data android:mimeType="application/x-pcapng" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+
+            <!-- Import: opening a capture or hash file directly, from a file manager
+                 or a download notification. Extensions cannot be matched on ACTION_SEND,
+                 only on a VIEW with a path, so both filters are needed. -->
+            <intent-filter android:label="@string/app_name">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/vnd.tcpdump.pcap" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter android:label="@string/app_name">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\.22000" />
+                <data android:pathPattern=".*\\.pcap" />
+                <data android:pathPattern=".*\\.cap" />
+                <data android:pathPattern=".*\\.pcapng" />
+            </intent-filter>
+
         </activity>
 
         <provider

@@ -50,6 +50,20 @@
       <div id="stagePanel"></div>
     </section>
 
+    <!-- ── import ──────────────────────────────────────────────── -->
+    <!-- Deliberately outside the device-gated cards: a handshake can be imported and
+         cracked with no board attached. This is the door another tool's export comes
+         through — NRSuite's portal writes one, and cracking it is this app's half. -->
+    <section class="card" id="importCard">
+      <h2>Import capture</h2>
+      <div class="stagesub">Bring in a handshake from another tool — a .22000 list or a
+        capture file (.pcap / .cap / .pcapng). No device needed; the search runs on the bridge.</div>
+      <input type="file" id="importFile"
+             accept=".22000,.pcap,.cap,.pcapng,.txt,application/octet-stream" hidden>
+      <button class="block" id="importBtn" style="margin-top:10px"></button>
+      <div id="importResult"></div>
+    </section>
+
     <!-- ── wardrive ───────────────────────────────────────────── -->
     <section class="card hidden" id="wardriveCard">
       <h2>Wardrive</h2>

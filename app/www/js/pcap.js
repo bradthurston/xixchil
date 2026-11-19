@@ -172,3 +172,195 @@ export class PcapWriter {
     return (this.lastTs - this.firstTs) / 1000;
   }
 }
+
+// ── reading a capture back ───────────────────────────────────────────────────
+//
+// The import path. A file produced somewhere else — NRSuite's export, airodump-ng,
+// Wireshark — has to come out of here in the same shape our own captures take
+// (radiotap + frame chunks), because Analyze, Extract and Crack all work on chunks.
+// Three things differ between writers and each is read from the file rather than
+// assumed:
+//
+//   byte order — libpcap is written little- or big-endian. The magic word says which,
+//                so a flag decides instead of a guess.
+//   link type  — 127 radiotap (carries the header), 105 bare 802.11 (does not). A bare
+//                frame gets a synthetic 8-byte radiotap header so parseChunk's contract
+//                still holds. Without it the 802.11 header would be parsed as if it were
+//                radiotap and every field downstream would be quietly wrong — the exact
+//                failure this file exists to avoid.
+//   container  — classic libpcap, or pcapng (Wireshark's default). pcapng keeps the link
+//                type in an interface description block, so that block is read before any
+//                packet is trusted.
+//
+// Nothing is hidden: a short or oversized file comes back with `truncated` set, because
+// "read 4,000 of 12,000 frames" must not look the same as "read all of it".
+
+const LINKTYPE_IEEE802_11 = 105;
+
+const PCAPNG_SHB = 0x0a0d0d0a;
+const PCAPNG_IDB = 1;
+const PCAPNG_SPB = 3;
+const PCAPNG_EPB = 6;
+
+/** Cap on frames held from one import. A phone cannot hold an unbounded capture. */
+export const MAX_IMPORT_PACKETS = 250000;
+
+/** An 8-byte radiotap header declaring no fields — what a bare 802.11 frame gets. */
+export function emptyRadiotap() {
+  const b = new Uint8Array(8);
+  b[0] = 0;   // it_version
+  b[2] = 8;   // it_len
+  return b;
+}
+
+/** Does this packet start with a plausible radiotap header? */
+export function looksRadiotap(b) {
+  if (!b || b.length < 8 || b[0] !== 0) return false;
+  const len = b[2] | (b[3] << 8);
+  return len >= 8 && len <= b.length;
+}
+
+/**
+ * Read a libpcap or pcapng image into raw packets, without normalising them.
+ * Returns { format, linktype, endian, packets, truncated }.
+ */
+export function readPcap(bytes) {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (b.length < 4) throw new Error('file too short to be a capture');
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+
+  // pcapng first: its block type is byte-order independent.
+  if (dv.getUint32(0, false) === PCAPNG_SHB) return readPcapng(b, dv);
+
+  // Classic libpcap. Bytes d4 c3 b2 a1 mean a little-endian file; a1 b2 c3 d4 big.
+  let le = true, ns = false;
+  const m = dv.getUint32(0, true);
+  if (m === 0xa1b2c3d4) { le = true; }
+  else if (m === 0xd4c3b2a1) { le = false; }
+  else if (m === 0xa1b23c4d) { le = true; ns = true; }
+  else if (m === 0x4d3cb2a1) { le = false; ns = true; }
+  else throw new Error('not a libpcap or pcapng file');
+
+  if (b.length < 24) throw new Error('libpcap header truncated');
+  const linktype = dv.getUint32(20, le);
+
+  const packets = [];
+  let off = 24, truncated = false;
+  while (off + 16 <= b.length) {
+    const incl = dv.getUint32(off + 8, le);
+    off += 16;
+    if (off + incl > b.length) { truncated = true; break; }
+    packets.push(b.subarray(off, off + incl));
+    off += incl;
+    if (packets.length >= MAX_IMPORT_PACKETS) { truncated = true; break; }
+  }
+
+  return {
+    format: ns ? 'pcap-ns' : 'pcap',
+    linktype,
+    endian: le ? 'le' : 'be',
+    packets,
+    truncated,
+  };
+}
+
+function readPcapng(b, dv) {
+  if (b.length < 12) throw new Error('pcapng section header truncated');
+
+  // The byte-order magic is written in the section's own order: read big-endian it
+  // arrives as 1a2b3c4d for a big-endian section, 4d3c2b1a for a little-endian one.
+  let le = dv.getUint32(8, false) === 0x4d3c2b1a;
+
+  const packets = [];
+  let linktype = null, off = 0, truncated = false;
+
+  while (off + 12 <= b.length) {
+    const type = dv.getUint32(off, le);
+    const len = dv.getUint32(off + 4, le);
+    if (len < 12 || off + len > b.length) { truncated = true; break; }
+    const body = off + 8, bodyLen = len - 12;
+
+    if (type === PCAPNG_SHB) {
+      // A new section can switch byte order; re-read it before trusting more blocks.
+      if (bodyLen >= 4) le = dv.getUint32(body, false) === 0x4d3c2b1a;
+    } else if (type === PCAPNG_IDB && bodyLen >= 8) {
+      linktype = dv.getUint16(body, le);
+    } else if (type === PCAPNG_EPB && bodyLen >= 20) {
+      const caplen = dv.getUint32(body + 12, le);
+      const dataAt = body + 20;
+      if (dataAt + caplen > off + len - 4) truncated = true;
+      else packets.push(b.subarray(dataAt, dataAt + caplen));
+    } else if (type === PCAPNG_SPB && bodyLen >= 4) {
+      const origlen = dv.getUint32(body, le);
+      const avail = Math.min(origlen, bodyLen - 4);
+      if (avail > 0) packets.push(b.subarray(body + 4, body + 4 + avail));
+    }
+
+    off += len;
+    if (packets.length >= MAX_IMPORT_PACKETS) { truncated = true; break; }
+  }
+
+  return {
+    format: 'pcapng',
+    linktype: linktype ?? LINKTYPE_IEEE802_11_RADIOTAP,
+    endian: le ? 'le' : 'be',
+    packets,
+    truncated,
+  };
+}
+
+/**
+ * Read a capture into radiotap+frame chunks — the shape everything downstream uses.
+ * Returns { chunks, meta }; meta says what the file was and whether any of it was
+ * skipped, so the caller can report that instead of implying a complete read.
+ */
+export function readCapture(bytes) {
+  const r = readPcap(bytes);
+  const radiotap = r.linktype === LINKTYPE_IEEE802_11_RADIOTAP;
+  const bare = r.linktype === LINKTYPE_IEEE802_11;
+
+  const chunks = [];
+  let synthesised = 0, skipped = 0;
+
+  for (const p of r.packets) {
+    if (!p.length) { skipped++; continue; }
+    if (radiotap) { chunks.push(p); continue; }
+    // Trust the packet over the file header when they disagree: some writers leave the
+    // link type at 105 while the frames themselves carry radiotap.
+    if (looksRadiotap(p)) { chunks.push(p); continue; }
+    if (bare) {
+      const c = new Uint8Array(8 + p.length);
+      c.set(emptyRadiotap(), 0);
+      c.set(p, 8);
+      chunks.push(c);
+      synthesised++;
+      continue;
+    }
+    skipped++;   // a link type we cannot turn into 802.11 (prism, ethernet, …)
+  }
+
+  return {
+    chunks,
+    meta: {
+      format: r.format,
+      linktype: r.linktype,
+      endian: r.endian,
+      packets: r.packets.length,
+      chunks: chunks.length,
+      synthesisedRadiotap: synthesised,
+      skipped,
+      truncated: r.truncated,
+    },
+  };
+}
+
+/**
+ * The same read, as a bare array of chunks.
+ *
+ * Kept because it is the original contract — the tools and their tests call this and
+ * expect chunks, not a result object. Anything that wants the metadata (the import
+ * path, which has to report what it skipped) calls readCapture instead.
+ */
+export function chunksFromPcap(bytes) {
+  return readCapture(bytes).chunks;
+}
