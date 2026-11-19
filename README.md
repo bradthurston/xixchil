@@ -74,6 +74,33 @@ The reason the last two stages exist is the loop: a captured handshake is pulled
 capture, converted to a hashcat `22000` line, sent to a crack bridge, and the passphrase comes
 back to the screen. No Termux, no SSH, no shell, no typing.
 
+## The bridge — the other half of the crack loop
+
+That last step is the one nobody else does end to end, and it needs a second piece of software.
+The app produces the `22000` line; **the bridge** is what actually turns it into a password.
+Without it the loop stops at a file on your phone, which is exactly where every other tool stops.
+
+Here is the honest shape of it, because it matters:
+
+| | |
+|---|---|
+| **What it is** | A small FastAPI service (~400 lines) that runs `hashcat -m 22000` and hands back the result. |
+| **What it needs** | A machine with a GPU, or the phone itself under Termux. Either works — the app only needs a URL and a token. |
+| **Why it's separate** | The phone CPU does roughly **2-5 kH/s**. A single desktop GPU does roughly **371 kH/s**. That is not a tuning difference, it is two orders of magnitude, so the design is "the phone is the console, the GPU is the muscle". |
+| **What leaves your phone** | A `.22000` file, 1-20 KB. That is the entire egress. Wordlists stay on the bridge host and are never copied to the phone. |
+
+It is deliberately a dumb service: HTTP/JSON, token-gated, one worker thread so jobs queue
+instead of fighting over the GPU, and automatic pruning of jobs after a retention window. It
+holds no radio state and knows nothing about 802.11 — it takes a hash and gives back an answer.
+
+```
+phone  ──.22000 + X-Token──►  bridge  ──►  hashcat -m 22000  ──►  passphrase  ──►  phone
+```
+
+Run it, configure it, and the endpoints are all in **[`bridge/README.md`](bridge/README.md)**.
+Wordlists and hashcat rules are **not** in this repo — they are large, separately licensed, and
+yours; the bridge will tell you what it can see via `GET /wordlists`.
+
 ## Where it sits next to everything else
 
 | Tool | What it is | Where it beats us today |
@@ -160,6 +187,15 @@ Toolchain that works: JDK 21, Android SDK with platform 36, Gradle 8.14.3, AGP 8
 `minSdk 24` / `compileSdk 36`. JitPack is required in `android/build.gradle` — the USB serial
 plugin pulls `mik3y/usb-serial-for-android` from there. USB transport is
 `@leeskies/capacitor-usb-serial`. No root required.
+
+### Bridge
+
+    cd bridge
+    python3 -m pip install fastapi uvicorn python-multipart
+    python3 bridge.py
+
+Needs `hashcat` on `PATH`. Generates `./token` on first run. Full details, the Termux path and
+the API are in **[`bridge/README.md`](bridge/README.md)**.
 
 ## The protocol is not ours, deliberately
 

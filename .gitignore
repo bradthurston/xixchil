@@ -16,6 +16,12 @@ app/android/app/src/main/assets/capacitor.plugins.json
 app/android/capacitor-cordova-android-plugins/
 app/.gradle/
 
+# bridge — these are live secrets and your own crack results, never the project's
+bridge/token
+bridge/jobs/
+bridge/rules/
+bridge/wordlists/
+
 # signing
 *.keystore
 *.jks
