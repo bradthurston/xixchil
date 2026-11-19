@@ -133,7 +133,10 @@ header {
 /* The seal, at rest: the mark is the one place vermilion sits when nothing
    is happening. Everything else earns its colour by meaning something. */
 header > svg { color: var(--accent); flex: none; }
-header h1 { font-size: 17px; font-weight: 650; margin: 0; letter-spacing: .2px; flex: 1; }
+header h1.brand { margin: 0; flex: 1 1 auto; min-width: 0; display: flex; align-items: center; }
+/* vector wordmark: cap height 14px, so it reads at header scale without
+   the hairline dropout that a lighter Mincho weight suffers on dark. */
+header .wordmark { height: 16.75px; width: auto; max-width: 100%; flex: none; fill: var(--text); }
 /* Ink or paper. Names the theme it switches TO, so it says what it does
    instead of showing a glyph you have to decode. */
 #themeBtn { gap: 5px; color: var(--muted); }
