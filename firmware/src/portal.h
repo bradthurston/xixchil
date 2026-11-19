@@ -89,6 +89,16 @@ static char     g_pt_psk[32]    = {0};
 // written once at start.
 static char     g_pt_uri[PORTAL_URI_MAX] = {0};
 
+// Crash forensics. RTC_NOINIT_ATTR keeps these across a software reset (a panic
+// reboots without clearing RTC slow memory), which is the only way to learn what
+// the heap looked like at the instant of an abort inside the closed-source WiFi
+// blob. PT_DIAG_MAGIC distinguishes a real reading from power-on garbage.
+#define PT_DIAG_MAGIC 0x58494348u          // "XICH"
+RTC_NOINIT_ATTR static uint32_t g_pt_diag_magic    = 0;
+RTC_NOINIT_ATTR static uint32_t g_pt_diag_heap     = 0;
+RTC_NOINIT_ATTR static uint32_t g_pt_diag_largest  = 0;
+RTC_NOINIT_ATTR static uint32_t g_pt_diag_internal = 0;
+
 static char     g_pt_page[PORTAL_PAGE_MAX];
 static size_t   g_pt_page_len   = 0;
 static bool     g_pt_page_open  = false;   // a chunked push is in flight
@@ -370,6 +380,18 @@ static const char* portal_start(const char* ssid, const char* bssid, int channel
     }
 
     WiFi.softAPConfig(PORTAL_IP, PORTAL_IP, PORTAL_MASK);
+
+    // --- crash forensics ------------------------------------------------------
+    // Recorded immediately before the call that is known to abort. RTC slow
+    // memory is NOT cleared by a software reset, so these survive the panic
+    // reboot and STATUS can report what the heap looked like on the way in.
+    // Without this, a softAP abort is a dead end: the trace tells you WHERE it
+    // died (inside the WiFi blob) but never whether it was out of memory, out of
+    // CONTIGUOUS memory, or neither — and those want opposite fixes.
+    g_pt_diag_magic   = PT_DIAG_MAGIC;
+    g_pt_diag_heap    = (uint32_t)ESP.getFreeHeap();
+    g_pt_diag_largest = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    g_pt_diag_internal= (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
     // A throwaway PSK, deliberately NOT the target's (we do not have it). The
     // client's cached key will not match ours, so it runs the 4-way handshake and

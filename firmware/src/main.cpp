@@ -45,6 +45,15 @@
 // nRF24 init-once flag. Declared at file scope because cmd_status references it.
 static bool g_nrf_init_done = false;
 
+// Free heap as measured at the top of setup(), before any subsystem has claimed
+// its share. Reported by STATUS as heap_boot so it can be compared across builds:
+// transport buffers (the USBCDC RX ring, the frame scratch buffer) and radio
+// bring-up (softAP needs a large contiguous chunk) draw from the SAME internal
+// heap, and this board runs with only ~50 KB of it. A build that moves heap_boot
+// down without saying so is a build that can fail at PORTAL_START instead of at
+// compile time, so the number stays visible.
+static uint32_t g_heap_boot = 0;
+
 // Debug output. This MUST NOT share a port with the protocol — anything printed
 // on a port carrying frames corrupts the stream. Serial0 is the bridged UART,
 // which is where a serial monitor is normally attached, so debug goes there and
@@ -174,6 +183,26 @@ static void cmd_status(uint8_t id) {
     d["ble_connected"] = g_connected;
     d["ble_mtu"] = g_mtu;
     d["heap_free"] = ESP.getFreeHeap();
+    d["heap_boot"] = g_heap_boot;
+    // Why the last boot happened. This is the one field that turns "the board
+    // vanished mid-command" into a fact: ESP_RST_PANIC means the firmware aborted
+    // (an IDF allocation failure inside the WiFi stack aborts, it does not return
+    // an error), ESP_RST_TASK_WDT means a task overran, ESP_RST_POWERON means a
+    // plain power cycle with nothing to explain. A crash that drops the USB port
+    // takes the panic backtrace with it, so the reason has to be read back AFTER
+    // the reboot — which is exactly what this does.
+    d["reset_reason"] = (int)esp_reset_reason();
+    // What the heap looked like at the last PORTAL_START, read from RTC memory so
+    // it survives the panic that call causes. "no reading yet" means no attempt
+    // has been made since power-on; the numbers only mean anything paired with
+    // reset_reason==4 (a panic).
+    if (g_pt_diag_magic == PT_DIAG_MAGIC) {
+        d["last_portal_start_heap"]    = g_pt_diag_heap;
+        d["last_portal_start_largest"] = g_pt_diag_largest;
+        d["last_portal_start_internal"]= g_pt_diag_internal;
+    } else {
+        d["last_portal_start_heap"] = "no reading yet";
+    }
     d["psram_total"] = (uint32_t)psram_total();
     d["psram_free"] = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     d["uptime_ms"] = millis();
@@ -1329,13 +1358,26 @@ static uint8_t hop_poll() {
 }
 
 void setup() {
+    // First thing, before Serial or WiFi or anything else has taken a byte: the
+    // baseline this build starts from. STATUS reports it back as heap_boot.
+    g_heap_boot = ESP.getFreeHeap();
+
     // The Arduino USBCDC RX ring buffer defaults to 256 bytes (begin() applies that
-    // default only when the queue was not already set). A protocol frame may be up
-    // to FRAME_MAX_PAYLOAD bytes and the host writes one as a single USB burst:
-    // with a 256-byte ring the excess is silently discarded ("CDC RX Overflow") and
-    // the frame never parses — a page push dies mid-hex and reads like a firmware
-    // bug, not a transport limit. Must be set BEFORE begin().
-    Serial.setRxBufferSize(FRAME_MAX_PAYLOAD * 2);
+    // default only when the queue was not already set). A protocol frame is
+    // FRAME_HEADER_LEN + FRAME_MAX_PAYLOAD bytes and the host writes one as a single
+    // USB burst: with a 256-byte ring the excess is silently discarded ("CDC RX
+    // Overflow") and the frame never parses — a page push dies mid-hex and reads
+    // like a firmware bug, not a transport limit. Must be set BEFORE begin().
+    //
+    // SIZE IT TO THE GEOMETRY, NOT TO HEADROOM. The ring only has to hold ONE full
+    // frame, header included, so the correct value is exactly
+    // FRAME_HEADER_LEN + FRAME_MAX_PAYLOAD. Doubling it looks harmless and is not:
+    // this comes out of INTERNAL heap (~50 KB free on this build), and the softAP
+    // needs a large contiguous chunk of that same heap at PORTAL_START. An 8192-byte
+    // ring left too little, the AP bring-up aborted inside the IDF WiFi stack, and
+    // the board rebooted — losing the USB port mid-command. Transport buffers and
+    // radio bring-up are competing for one small pool; do not spend it on slack.
+    Serial.setRxBufferSize(FRAME_HEADER_LEN + FRAME_MAX_PAYLOAD);
     Serial.begin(115200);        // native USB: opening it is what makes the port enumerate
     ch_usb.begin(115200);
     ch_uart.begin(115200);       // the bridged UART — where a phone cable most often lands
