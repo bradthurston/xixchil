@@ -55,7 +55,8 @@ the network the captures came from sat inside `tools/verify_analyze.mjs` from th
 commit onward, together with five real MACs (the dev board's, an access point's, a station's, and a
 pair of on-air addresses from a capture). Six substitutions were applied across all 42 commits:
 
-    git filter-repo --replace-text <file>      # aa:bb:cc:dd:ee:ff -> aa:bb:cc:dd:ee:ff  (etc.)
+    git filter-repo --replace-text <file>      # each real value -> a synthetic one
+                                               # e.g. <device-mac> -> aa:bb:cc:dd:ee:ff
 
 Every substitution deliberately matches the value the working tree already carried, so the rewrite
 left the checked-out content **byte-identical**. Verify that, do not assume it:
@@ -64,10 +65,15 @@ left the checked-out content **byte-identical**. Verify that, do not assume it:
     git rev-parse HEAD^{tree}     # 67ff754a74f3d51ff75685d626005fb678f6644d, before and after
 
     # every old string must be gone from EVERY reachable commit
-    git log --all -S 'EAT-GUEST-WIFI' --oneline        # expect no output
+    git log --all -S '<the-real-ssid>' --oneline        # expect no output
 
 Run that check against a **fresh clone of the remote**, not the local repo — the local repo is
 exactly where a stale object would hide.
+
+**Never write the real values into this file, or into any documentation of the scrub.** Naming a
+value in prose is the same as committing it: the first version of this section quoted the real MAC
+and the real SSID as examples and had to be re-purged from history. Use `<device-mac>`,
+`<the-real-ssid>` — a placeholder carries the instruction just as well.
 
 ### The residual risk: orphaned objects
 
