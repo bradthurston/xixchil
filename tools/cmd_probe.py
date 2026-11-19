@@ -44,6 +44,15 @@ def main():
     cmds = sys.argv[2:] or DEFAULT
 
     ser = serial.Serial(port, 115200, timeout=0.3)
+
+    # pyserial asserts DTR and RTS the moment the port opens. On this board's
+    # USB-Serial/JTAG, RTS is wired to EN: asserting it holds the chip in reset
+    # and the protocol stays silent forever. DTR is wired to GPIO0, where True
+    # means "boot from flash" (False drops into the ROM downloader, which prints
+    # its own banner and then waits). So both have to be set explicitly, and the
+    # order matters -- release reset after choosing the boot mode.
+    ser.setDTR(True)          # GPIO0 high -> run the app, not the downloader
+    ser.setRTS(False)         # EN high -> release reset
     time.sleep(0.4)
     ser.reset_input_buffer()
 
