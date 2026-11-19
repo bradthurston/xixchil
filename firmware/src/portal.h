@@ -81,7 +81,7 @@ static uint8_t  g_pt_bssid[6]   = {0};
 static bool     g_pt_have_bssid = false;
 static uint8_t  g_pt_ch         = 1;
 static bool     g_pt_hidden     = false;
-static char     g_pt_psk[32]    = {0};
+static char     g_pt_psk[64]    = {0};   // WPA2 passphrase is 8..63 chars — 32 truncated a max-length one
 
 // The DHCP server RETAINS this pointer for its whole lifetime (esp_netif.h:543),
 // so it must outlive the call. A local buffer here would dangle and the option
@@ -333,7 +333,7 @@ static bool portal_arm_ok(const char* ssid, const char* bssid, int channel, cons
 // success — the caller surfaces it verbatim rather than a generic "failed",
 // because "MAC rejected" and "channel rejected" need different fixes.
 static const char* portal_start(const char* ssid, const char* bssid, int channel,
-                                const char* ack, const char* uri) {
+                                const char* ack, const char* uri, const char* psk) {
     if (g_pt_on) return "portal already running";
     if (!portal_arm_ok(ssid, bssid, channel, ack)) return "not armed: check ssid/channel/acknowledge";
 
@@ -399,7 +399,20 @@ static const char* portal_start(const char* ssid, const char* bssid, int channel
     // completing is the one outcome we do not need: it is M2 that is crackable.
     // Offering this open instead would let clients with a saved WPA2 profile skip
     // the handshake entirely, which is the whole capture opportunity.
-    snprintf(g_pt_psk, sizeof(g_pt_psk), "x%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
+    //
+    // An operator-supplied psk is accepted so a network whose key is already known
+    // can be mimicked exactly. Either way the EFFECTIVE value is reported back in
+    // the reply and in PORTAL_STATUS — without that the twin is unjoinable by
+    // anyone, operator included, because the key is generated here and never
+    // leaves the board.
+    memset(g_pt_psk, 0, sizeof(g_pt_psk));
+    if (psk && *psk) {
+        size_t n = strlen(psk);
+        if (n < 8 || n > 63) return "psk must be 8..63 chars (WPA2 passphrase)";
+        strncpy(g_pt_psk, psk, sizeof(g_pt_psk) - 1);
+    } else {
+        snprintf(g_pt_psk, sizeof(g_pt_psk), "x%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
+    }
 
     if (!WiFi.softAP(g_pt_ssid, g_pt_psk, g_pt_ch, g_pt_hidden ? 1 : 0, PORTAL_MAX_CONN)) {
         WiFi.mode(WIFI_OFF);

@@ -1035,6 +1035,7 @@ static void cmd_portal_start(uint8_t id, JsonDocument& args) {
     int         ch    = args["channel"] | (int)1;
     const char* ack   = args["acknowledge"];
     const char* uri   = args["captive_portal_uri"];
+    const char* psk   = args["psk"];
 
     if (!ssid) { send_error(id, "missing args.ssid"); return; }
     // Named separately from the ssid check because the two failures need
@@ -1042,7 +1043,7 @@ static void cmd_portal_start(uint8_t id, JsonDocument& args) {
     // been thought about. An omitted acknowledge is not an implicit yes.
     if (!ack)  { send_error(id, "missing args.acknowledge — this is the arming gate"); return; }
 
-    const char* why = portal_start(ssid, bssid, ch, ack, uri);
+    const char* why = portal_start(ssid, bssid, ch, ack, uri, psk);
     if (why) { send_error(id, why); return; }
 
     g_stage = STAGE_ATTACK;
@@ -1055,6 +1056,10 @@ static void cmd_portal_start(uint8_t id, JsonDocument& args) {
     d["cloned_bssid"]   = g_pt_have_bssid;
     d["uri"]            = g_pt_uri;
     d["ap_up"]          = g_pt_ap_up;
+    // The effective key, echoed so the operator can join the twin they just raised.
+    // It is generated on the board and exists nowhere else, so without this the
+    // AP is unjoinable — including for the bench test.
+    d["psk"]            = g_pt_psk;
     // The honest ceiling of what this board knows. The AP interface came up and
     // is beaconing; whether a given stranger's phone finds it is not something
     // we can observe, so the reply does not imply it.
@@ -1102,6 +1107,9 @@ static void cmd_portal_status(uint8_t id) {
     d["subs_taken"]    = g_pt_subs_taken;
     d["subs_blank"]    = g_pt_subs_blank;
     d["subs_queued"]   = g_pt_sub_count;
+    // Reported so the operator can actually join the twin that is up — the key is
+    // generated on the board and exists nowhere else.
+    d["psk"]           = g_pt_psk;
     d["uptime_ms"]     = g_pt_on ? (uint32_t)(millis() - g_pt_started_ms) : 0;
     reply_json(id, true, d);
 }
@@ -1369,14 +1377,18 @@ void setup() {
     // Overflow") and the frame never parses — a page push dies mid-hex and reads
     // like a firmware bug, not a transport limit. Must be set BEFORE begin().
     //
-    // SIZE IT TO THE GEOMETRY, NOT TO HEADROOM. The ring only has to hold ONE full
-    // frame, header included, so the correct value is exactly
-    // FRAME_HEADER_LEN + FRAME_MAX_PAYLOAD. Doubling it looks harmless and is not:
-    // this comes out of INTERNAL heap (~50 KB free on this build), and the softAP
-    // needs a large contiguous chunk of that same heap at PORTAL_START. An 8192-byte
-    // ring left too little, the AP bring-up aborted inside the IDF WiFi stack, and
-    // the board rebooted — losing the USB port mid-command. Transport buffers and
-    // radio bring-up are competing for one small pool; do not spend it on slack.
+    // SIZE IT TO THE GEOMETRY. The ring only has to hold ONE full frame, header
+    // included, so the correct value is exactly FRAME_HEADER_LEN + FRAME_MAX_PAYLOAD.
+    // Do not "round up" to a power of two out of habit: this memory comes from
+    // INTERNAL heap (~50 KB free on this build) and the softAP wants a large
+    // contiguous chunk of that same pool at PORTAL_START.
+    //
+    // This comment used to claim the oversized (8192) ring CAUSED that softAP abort.
+    // That was measured and is FALSE: cutting the ring to 4104 raised heap_free
+    // 50160 -> 54388 and the fault was byte-identical, same NULL deref in
+    // ieee80211_hostap_attach. The real cause is still unproven; the strongest lead is
+    // NVS not being initialised when WiFi starts (esp-idf issue #8141). Do not
+    // re-blame the ring, and do not record a cause off a single green run.
     Serial.setRxBufferSize(FRAME_HEADER_LEN + FRAME_MAX_PAYLOAD);
     Serial.begin(115200);        // native USB: opening it is what makes the port enumerate
     ch_usb.begin(115200);
