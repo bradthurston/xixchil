@@ -2,6 +2,8 @@
 
 **ZIK-chel**
 
+![A praying mantis in black ink on warm paper — forelegs folded, long body slanting away](assets/mantis-banner.jpg)
+
 *Capture, analyze and crack WPA handshakes from your phone.*
 
 Xixchil splits the job between two halves that are each good at different things. A bare ESP32-S3
