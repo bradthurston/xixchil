@@ -68,7 +68,13 @@ export const FIRMWARE_COMMANDS = new Set([
   'CAPTURE_START', 'CAPTURE_STOP', 'CAPTURE_GET', 'CAPTURE_STATS',
   'PROBE_REPLY_START', 'PROBE_REPLY_STOP', 'PROBE_REPLY_STATUS',
   'BEACON_POOL_START', 'BEACON_POOL_STOP', 'BEACON_POOL_STATUS',
-  'PING', 'STATUS',
+  // The evil twin / captive portal — the credential-capture arm. The page is
+  // pushed in chunks because it has to survive a 1 KB frame and a JSON hex
+  // encoding; the radio keeps what is typed and hands it back over the event
+  // channel, never to disk.
+  'PORTAL_START', 'PORTAL_STOP', 'PORTAL_STATUS',
+  'PORTAL_PAGE_BEGIN', 'PORTAL_PAGE_CHUNK', 'PORTAL_PAGE_END',
+  'PING', 'STATUS', 'SCAN', 'WARDRIEVE_START', 'WARDRIEVE_STOP',
   // nRF24 MouseJack — separate SPI radio, not ESP32 WiFi
   'NRF_SEND',
 ]);
@@ -158,6 +164,34 @@ export const ATTACKS = [
       'Scoping here is the pool itself: the beacon builder refuses an empty name list, so there is ' +
       'no equivalent of a beacon-everything switch that could be left on by accident.',
     action: 'mana',
+  },
+  {
+    id: 'portal',
+    name: 'Evil twin portal',
+    icon: 'link',
+    kind: 'transmit',
+    built: 'partial',
+    tagline: 'Stand up the network a device already trusts, and let the device do the asking.',
+    detail:
+      'Wears the identity of a network that is already in the air — same name, same channel, same ' +
+      'cloned BSSID — then pushes the client off the real one so it rejoins this. The client lands ' +
+      'on a sign-in page served by the radio and whatever is typed into it comes back to this ' +
+      'phone. This is the credential-capture arm: the crack loop turns a capture into a ' +
+      'passphrase, and this turns a person into one.',
+    needs: [NEED.TRANSMIT, NEED.FIRMWARE],
+    firmware: 'PORTAL_START',
+    firmwareNote:
+      'The radio is built from the clauses, not from anyone else' + "'" + 's implementation: a softAP, a DNS ' +
+      'responder that hijacks what it can and refuses what it cannot, DHCP option 114 announcing ' +
+      'the portal, and an HTTP server that keeps what is typed. The DNS encoder is verified ' +
+      'byte-for-byte by tshark on the host (42 checks), against the same checks the phone-side ' +
+      'encoder already passed. Written from RFC 8910, RFC 2132 and RFC 1035 so the licence stays ' +
+      'MIT. ' +
+      'Two honest limits, stated rather than implied. The board reports that the AP is up and ' +
+      'beaconing — it cannot observe whether any given stranger finds it, and it does not claim ' +
+      'to. And nothing here has been flashed or run on hardware yet, which is why this reads ' +
+      'partial rather than ready.',
+    action: 'portal',
   },
   {
     id: 'mousejack',

