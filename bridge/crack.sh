@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# crack.sh - offload a WPA .22000 handshake to the Junebug RTX 3060 crack bridge.
+# crack.sh - offload a WPA .22000 handshake to a CUDA crack bridge.
 #
 # Workflow in NRSuite: capture a handshake -> export .22000 -> run this in the
 # NRSuite Terminal. Deliberately uses only curl + sed, because a stock Termux

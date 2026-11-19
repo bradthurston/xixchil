@@ -184,4 +184,4 @@ End-to-end test:
 5. Tap "Start Wardrive" — verify GPS icon turns active
 6. Walk near any AP — verify S3 captures, phone detects targets, deauth fires
 7. After 30 seconds tap "Stop" — verify .22000 file saved with hashes and GPS tags
-8. Transfer .22000 to Junebug (scp or Tailscale), run hashcat, verify cracked
+8. Transfer .22000 to the crack box (scp or Tailscale), run hashcat, verify cracked
