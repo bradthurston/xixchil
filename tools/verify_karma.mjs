@@ -44,8 +44,8 @@ const {
   SCOPE_ALLOWLIST, SCOPE_LAB_ANY,
 } = A;
 
-const BSSID = 'aa:bb:cc:dd:ee:ff';
-const STA = 'aa:bb:cc:dd:ee:ff';
+const BSSID = '9c:8b:76:80:32:97';
+const STA = '7c:d3:0a:11:22:33';
 const SSID = 'Foo-Cafe';
 
 let failed = 0;

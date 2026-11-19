@@ -2,7 +2,7 @@
 # sideload_moto.sh — get the current build onto the target device and watch it run.
 #
 # TARGET DEVICE IS THE MOTO G 2025 AND NOTHING ELSE. The app never goes on the Pixel.
-# (Brad's call, 2026-11-17.) The Moto G is the phone that already proved USB-OTG to the S3.
+# The Moto G is the phone that already proved USB-OTG to the S3.
 #
 # Usage:
 #   tools/sideload_moto.sh              # build nothing, install what is on disk, launch, tail logs

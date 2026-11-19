@@ -140,7 +140,7 @@ driver took the frame, which is not the same as the frame going out.
 
 The test: inject a beacon carrying a made-up SSID and this board's own MAC, then
 read it back with a *separate* receiver — the PC's WiFi adapter. It decoded
-`RC-TX-TEST` with BSSID `98:C3:77:B3:E9:AC` and a real signal level. Repeating
+`RC-TX-TEST` with BSSID `AA:BB:CC:DD:EE:FF` and a real signal level. Repeating
 it on channel 11 and seeing the receiver report channel 11 confirmed the channel
 is actually applied (an earlier run reported channel 7 for a channel-6 burst,
 which was a receiver-side artifact, not a firmware one).

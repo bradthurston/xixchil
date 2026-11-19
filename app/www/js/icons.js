@@ -1,5 +1,5 @@
-// icons.js — inline SVG icon set. No emoji, ever: Brad has flagged emoji-as-icons
-// as looking cheap across multiple projects. One stroke width, one viewBox, so the
+// icons.js — inline SVG icon set. No emoji, ever: emoji used as icons read as
+// cheap, so the whole set is drawn as line art. One stroke width, one viewBox, so the
 // whole set reads as a single design system.
 //
 // This is the functional set for the spike. The full visual design is a separate

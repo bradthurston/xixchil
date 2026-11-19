@@ -67,7 +67,7 @@ static bool g_nrf_init_done = false;
 #define TX_UUID   "adde0002-1234-5678-9abc-def012345678"   // device -> phone (notify)
 
 // ── Stage machine ───────────────────────────────────────────────────────────
-// Brad's flow, verbatim: capture → analyze → analysis → attack.
+// The stage flow: capture → analyze → analysis → attack.
 // "Analyze" is the processing step; "Analysis" is the findings the operator
 // reads before deciding whether to go active. The radio work of each stage is
 // what the coexistence table constrains, so the stage is a real radio state,

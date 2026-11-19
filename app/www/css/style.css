@@ -1,7 +1,6 @@
 /* style.css — functional shell for the spike.
-   Dark, mobile-first, no emoji. This is NOT the final visual design: per Brad's
-   standing rule, the real look-and-feel pass belongs to Sonnet with the
-   premium-design-system-tokens reference. */
+   Dark, mobile-first, no emoji. This is NOT the final visual design: the real
+   look-and-feel pass is still to come. */
 
 :root {
   --bg:        #0b0d10;

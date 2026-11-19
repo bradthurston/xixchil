@@ -12,7 +12,7 @@ phone (Marauder, Bruce, GhostESP, HaleHound, Flipper + devboard), or a laptop to
 (airgeddon, wifite, Kismet, WiFi Pineapple). Ours is the one where the thing you carry is a
 blank board with nothing stored on it, and the interface is the phone already in your pocket.
 
-Brad's framing, which is the actual product requirement:
+The product requirement, stated plainly:
 *"it needs to look like you are on your phone not messing with a frankenstein of pcb's and wires
 looking shady."*
 
@@ -67,7 +67,7 @@ Do not sell these. They are the price of entry.
 - **BadUSB / HID: not built** (TinyUSB is already the chosen USB mode for exactly this).
 - **PMKID-only passive path depends on their firmware.** Ours needs it natively.
 - **No name, no enclosure.** Bare devkit in a pocket is not "doesn't look shady."
-- **The Pixel is permanently out of scope.** Brad's call, 2026-11-17: this app only ever goes on the
+- **The Pixel is permanently out of scope.** This app only ever goes on the
   **Moto G 2025** (Android 16, no root), which is also the phone that proved the USB-OTG link works.
 
 ## How it wins — ranked, with the reason
@@ -124,9 +124,9 @@ the crack loop in one app.
 
 ## The endpoint — DECIDED 2026-11-17
 
-Everything above is positioning analysis, **not a backlog**. Brad's decision:
+Everything above is positioning analysis, **not a backlog**. The decision:
 
-**This is his tool. Phase one only. Done = the three-tap crack loop and 5 GHz, then stop.**
+**This is a personal tool. Phase one only. Done = the three-tap crack loop and 5 GHz, then stop.**
 
 No store, no name, no enclosure, no support burden. Report output, evil portal, BadUSB/HID and WPA3
 downgrade are out of scope unless he says otherwise. The problem this kills: a project with no

@@ -10,7 +10,7 @@
 // Needs tshark on PATH.
 
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, readFileSync, mkdtempSync } from 'node:fs';
+import { copyFileSync, readFileSync, existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +19,16 @@ const here = dirname(fileURLToPath(import.meta.url));
 const appJs = join(here, '..', 'app', 'www', 'js');
 const work = mkdtempSync(join(tmpdir(), 'analyzeverify-'));
 const pcap = resolve(process.argv[2] || join(here, 'capture.pcap'));
+
+// The default fixture is a real capture and is deliberately not in the repo: it
+// carries live network names and MACs. Pass a path, or drop one at
+// tools/capture.pcap locally (git-ignored). Nothing in this file may hardcode a
+// name or address that came off the air.
+if (!existsSync(pcap)) {
+  console.log(`\nSKIP: no capture at ${pcap}`);
+  console.log('      pass a pcap path, or place one at tools/capture.pcap (git-ignored).');
+  process.exit(0);
+}
 
 // analyze.js is an ES module living under a package without "type":"module",
 // so copy it to .mjs and import that.
@@ -86,6 +96,12 @@ const sameSet = (a, b) => a.size === b.size && [...a].every((x) => b.has(x));
 
 const tsBeaconing = new Set();
 const tsNamed = new Set();
+const tsSsid = new Map();   // bssid -> tshark's own decoding of that SSID
+// tshark hands `wlan.ssid` back as hex, so it must be decoded before it can be
+// compared with anything. Same escaping analyze.js uses, so an SSID carrying
+// non-printable bytes compares like-for-like instead of mismatching on encoding.
+const decodeSsid = (bytes) => [...bytes].map((c) =>
+  c >= 0x20 && c < 0x7f ? String.fromCharCode(c) : `\\x${c.toString(16).padStart(2, '0')}`).join('');
 for (const line of tshark(['-Y', 'wlan.fc.type_subtype==0x0008',
   '-T', 'fields', '-e', 'wlan.bssid', '-e', 'wlan.ssid'])) {
   const [b, s] = line.split('\t');
@@ -93,7 +109,7 @@ for (const line of tshark(['-Y', 'wlan.fc.type_subtype==0x0008',
   if (!k) continue;
   tsBeaconing.add(k);
   const t = (s || '').trim();
-  if (t && t !== '<MISSING>') tsNamed.add(k);
+  if (t && t !== '<MISSING>') { tsNamed.add(k); tsSsid.set(k, t); }
 }
 
 const ourNamed = new Set(r.aps.filter((a) => a.ssid).map((a) => a.bssid));
@@ -106,15 +122,20 @@ check('hidden-BSSID set matches tshark', sameSet(ourHidden, tsHidden),
   `ours ${ourHidden.size}, tshark ${tsHidden.size}`);
 check('hidden APs carry the hidden flag', r.aps.filter((a) => !a.ssid).every((a) => a.hidden));
 
-// One SSID decoded byte-for-byte, so the set checks above cannot pass by both
-// sides being empty.
-const wantSsid = 'EAT-GUEST-WIFI';
-check(`SSID "${wantSsid}" decoded exactly`,
-  r.aps.some((a) => a.ssid === wantSsid), 'not found in inventory');
-// The all-null SSID: a real network naming itself with 22 NUL bytes. We escape
+// One SSID compared byte-for-byte against tshark, so the set checks above cannot
+// pass by both sides being empty. The name is taken from tshark rather than from
+// a literal in this file: the fixture is a live capture, and a network name
+// committed to the repo is a privacy leak that outlives the capture.
+const [wantBssid, wantHex] = [...tsSsid.entries()][0] || [null, null];
+const wantSsid = wantHex ? decodeSsid(Buffer.from(wantHex, 'hex')) : null;
+check('one SSID decoded byte-for-byte vs tshark',
+  !!wantSsid && r.aps.some((a) => a.bssid === wantBssid && a.ssid === wantSsid),
+  wantSsid ? `tshark "${wantSsid}" on ${wantBssid}` : 'tshark decoded no named AP');
+// The all-NUL SSID: a real network naming itself with 22 NUL bytes. We escape
 // non-printable bytes rather than dropping them, so it should show as escapes
-// and still be treated as a *named* (not hidden) AP.
-const nullAp = r.aps.find((a) => a.bssid === '02:11:22:33:44:55');
+// and still be treated as a *named* (not hidden) AP. Found by shape, not by
+// address, so no on-air MAC is committed here.
+const nullAp = r.aps.find((a) => /^(?:\\x00){22}$/.test(a.ssid || ''));
 check('all-NUL SSID kept and escaped, not hidden',
   nullAp && nullAp.ssid && nullAp.ssid.length === 22 * 4 && !nullAp.hidden,
   nullAp ? `ssid=${JSON.stringify(nullAp.ssid.slice(0, 16))}… hidden=${nullAp.hidden}` : 'AP missing');
@@ -140,10 +161,7 @@ check(`peak RSSI matches tshark on all ${rssiChecked} APs`, rssiBad === 0, `${rs
 
 // ── 6. probe-request SSIDs — the PNL ─────────────────────────────────────────
 console.log('\n  ── probe requests (the PNL) ──');
-// Same escaping analyze.js uses, so an SSID with non-printable bytes compares
-// like-for-like instead of silently mismatching on encoding.
-const decodeSsid = (bytes) => [...bytes].map((c) =>
-  c >= 0x20 && c < 0x7f ? String.fromCharCode(c) : `\\x${c.toString(16).padStart(2, '0')}`).join('');
+// decodeSsid is defined above, next to the other tshark comparisons.
 
 const tsProbeSsids = new Set();
 for (const s of tshark(['-Y', 'wlan.fc.type_subtype==0x0004', '-T', 'fields', '-e', 'wlan.ssid'])) {

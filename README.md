@@ -24,8 +24,7 @@ device — a stock Moto G 2025 (Android 16, no root) — completing a bidirectio
 | `app/` on the Moto G | **USB-OTG proven** — bidirectional exchange with the S3 works on the target device |
 | crack loop | **proven live** — captured handshake → `.22000` → bridge → passphrase, 2.0 s round trip (`tools/verify_crack.mjs` PASS 32/32; `~/.hermes/cache/scratch/probe_live_crack.mjs`) |
 
-**Target device is the Moto G 2025 only. This app never goes on the Pixel** (Brad's call,
-2026-11-17).
+**Target device is the Moto G 2025 only. This app never goes on the Pixel.**
 
 The four-stage flow is laid out in the UI with capture, analysis, attack and crack wired to real
 code; the remaining gap in phase one is the on-device run of the crack loop and 5 GHz support.
@@ -130,6 +129,14 @@ serial plugin pulls `mik3y/usb-serial-for-android` from there.
 USB transport is `@leeskies/capacitor-usb-serial`, which bridges
 `mik3y/usb-serial-for-android`. No root. It handles CDC/ACM (the S3's native USB), plus
 CH340 / CP210x / FTDI bridges if the UART port is used instead.
+
+## Publishing
+
+The repo is private while it is being built and will be published **on GitHub only** — no Play
+Store, no F-Droid. Anything that reaches the tree or the history is permanent once it is public,
+so the pre-publish rules (no live SSIDs, no device MACs, synthetic fixtures only, no conversation
+transcripts, noreply commit identity, no personal identifiers in screenshots) live in
+`docs/PUBLISHING.md`, along with the mechanical check to run before flipping the switch.
 
 ## Licence
 
