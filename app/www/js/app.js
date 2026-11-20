@@ -18,7 +18,7 @@ import { takeSharedCapture } from './native-import.js';
 import { CrackBridge } from './bridge.js';
 import {
   PORTAL_ARM_TOKEN, portalArm, rankTwinCandidates, selectTwinTarget,
-  twinRejectReason, portalPageChunks, parsePortalSubmission,
+  twinRejectReason, portalPageChunks, parsePortalSubmission, PORTAL_TEMPLATES,
 } from './portal.js';
 import './gps.js';    // window.GPS
 import './hashstore.js'; // window.HashStore
@@ -1138,7 +1138,21 @@ function renderAttackPanel(box) {
   $('#portalPush')?.addEventListener('click', onPortalPushPage);
   $('#portalPageDefault')?.addEventListener('click', () => {
     const el = $('#portalPage');
-    if (el) { el.value = PORTAL_DEFAULT_PAGE; localStorage.removeItem('portalPage'); }
+    if (el) {
+      const fresh = portalPageHtml(portalTwin?.ssid, portalTemplateId());
+      el.value = fresh;
+      localStorage.removeItem('portalPage');
+    }
+  });
+  $('#portalTmpl')?.addEventListener('change', (e) => {
+    const id = e.target.value;
+    localStorage.setItem('portalTemplate', id);
+    const el = $('#portalPage');
+    if (el) {
+      const fresh = portalPageHtml(portalTwin?.ssid, id);
+      el.value = fresh;
+      localStorage.removeItem('portalPage');
+    }
   });
   $('#portalSubsClear')?.addEventListener('click', () => { portalSubs = []; renderStagePanel(); });
   $('#manaDefaults')?.addEventListener('click', () => fillDefaults('manaList'));
@@ -2457,36 +2471,20 @@ let portalPushResult = null;   // page push outcome
 let portalSubs = [];           // submissions; memory only, never written down
 let portalTicker = null;
 
-// A deliberately generic placeholder. It is the operator's job to make it match
-// whatever the twin claims to be — shipping a branded page would be shipping a
-// claim about a network this tool does not own. It exists so the plumbing can be
-// exercised without authoring HTML first.
-const PORTAL_DEFAULT_PAGE = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sign in to continue</title>
-<style>
- body{font:16px/1.5 system-ui,-apple-system,sans-serif;margin:0;display:grid;
-      place-items:center;min-height:100vh;background:#f4f4f6;color:#16181d}
- .card{background:#fff;padding:26px 24px;border-radius:14px;max-width:340px;width:100%;
-       box-shadow:0 2px 18px rgba(0,0,0,.10)}
- h1{font-size:19px;margin:0 0 6px}
- p{color:#5a5f6a;margin:0 0 18px;font-size:14px}
- label{display:block;font-size:13px;margin:0 0 4px;color:#333}
- input{width:100%;padding:11px;border:1px solid #ccd0d8;border-radius:9px;font-size:16px;
-       box-sizing:border-box;margin-bottom:14px;background:#fff;color:inherit}
- button{width:100%;padding:12px;border:0;border-radius:9px;background:#1a73e8;color:#fff;
-        font-size:16px;font-weight:600}
-</style></head>
-<body><form class="card" method="post" action="/">
-  <h1>Sign in to continue</h1>
-  <p>This network requires you to sign in before you can use it.</p>
-  <label for="u">Email or username</label>
-  <input id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false">
-  <label for="p">Password</label>
-  <input id="p" name="password" type="password" autocomplete="current-password">
-  <button type="submit">Sign in</button>
-</form></body></html>`;
+/**
+ * The page the portal serves. Picks a template from the library and bakes the
+ * twin's claimed SSID into it. The operator chooses the template; the default
+ * is 'generic' and it is always overridable in the textarea.
+ */
+function portalPageHtml(ssid, templateId) {
+  const tmpl = PORTAL_TEMPLATES.find((t) => t.id === templateId) || PORTAL_TEMPLATES[0];
+  return tmpl.fn(ssid || '');
+}
+
+/** Saved template preference, defaulting to 'generic'. */
+function portalTemplateId() {
+  return localStorage.getItem('portalTemplate') || 'generic';
+}
 
 /** The live numbers, from the radio's own counters. */
 function portalLiveHtml() {
@@ -2571,8 +2569,13 @@ function portalActionHtml(a) {
     ? `<div class="crackstate">${Icon('alert', { size: 15 })}${escapeHtml(armed.problems[0])}</div>`
     : '';
 
-  const pageVal = localStorage.getItem('portalPage') ?? PORTAL_DEFAULT_PAGE;
+  const pageVal = (() => {
+    const saved = localStorage.getItem('portalPage');
+    if (saved) return saved;
+    return portalPageHtml(pick?.ssid, portalTemplateId());
+  })();
   const push = portalPushResult;
+  const tmplId = portalTemplateId();
 
   return `
   <div class="crackbox">
@@ -2611,17 +2614,24 @@ function portalActionHtml(a) {
     <div id="portalLive" style="margin-top:8px">${portalLiveHtml()}</div>
 
     <div class="crackstate" style="margin-top:12px">${Icon('capture', { size: 15 })}The page it serves</div>
-    <div class="crackmeta">Sent to the radio in chunks and kept in its RAM, not on its flash. The
-      generic default is a placeholder — make it match what the twin claims to be, because that
-      screen is the one that has to look legitimate.</div>
+    <div class="crackmeta">Sent to the radio in chunks and kept in its RAM, not on its flash. Pick a
+      template that matches what the target network expects — a generic sign-in on a coffee shop
+      WiFi will not fool anyone. The ${pick ? `<code>${escapeHtml(pick.ssid)}</code>` : 'twin'}'s name is
+      baked into the page.</div>
+    <label class="field" style="margin-top:6px">
+      <span>Template</span>
+      <select id="portalTmpl">
+        ${PORTAL_TEMPLATES.map((t) => `<option value="${escapeHtml(t.id)}"${tmplId === t.id ? ' selected' : ''}>${escapeHtml(t.label)} — ${escapeHtml(t.desc)}</option>`).join('')}
+      </select>
+    </label>
     <label class="field">
-      <span>The page HTML</span>
+      <span>The page HTML (editable — template fills it, you can change it)</span>
       <textarea id="portalPage" rows="12" spellcheck="false" autocapitalize="off">${escapeHtml(pageVal)}</textarea>
     </label>
     <div class="row" style="margin-top:6px">
       <button id="portalPush" class="ghost" ${portalRunning ? '' : 'disabled'}>
         ${Icon('capture', { size: 15 })}Push page to the radio</button>
-      <button id="portalPageDefault" class="ghost" style="margin-left:0">Reset to default</button>
+      <button id="portalPageDefault" class="ghost" style="margin-left:0">Reset to template</button>
     </div>
     ${push ? `<div class="crackmeta">${
       push.phase === 'done'
@@ -2673,6 +2683,9 @@ function onPortalPickCandidate(e) {
   } else {
     portalTwin = { ssid: sel.twin.ssid, bssid: sel.twin.bssid, channel: sel.twin.channel };
     portalArmed = null;
+    // Regenerate the page HTML with the new SSID — a router-login template
+    // that still says "Starbucks WiFi" is worse than the old constant.
+    localStorage.removeItem('portalPage');
     log('ev', `portal: twin target is "${sel.twin.ssid}" on channel ${sel.twin.channel}`);
   }
   renderStagePanel();

