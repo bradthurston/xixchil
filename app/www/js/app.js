@@ -76,7 +76,20 @@ const decoder = new FrameDecoder({
       capture?.onPcapChunk(f.payload);
       return;
     }
+    // Wardrive's live stream. One radiotap+frame per message, and it belongs to
+    // Wardrive's own analysis — not to the capture writer above, whose chunks
+    // are mid-assembly into a pcap artifact.
+    if (f.type === TYPE.PCAP_CONT) {
+      window.Wardrive?.onSegmentChunk(f.payload);
+      return;
+    }
     const json = f.type === TYPE.RESP || f.type === TYPE.EVENT ? payloadJson(f.payload) : null;
+    if (json === null && (f.type === TYPE.RESP || f.type === TYPE.EVENT)) {
+      // A RESP whose payload never parsed is a LOST REPLY, not a refusal by the
+      // board — the board may have accepted the command and answered perfectly.
+      // Say which one it is: the old single "57B" line cost a day of hunting.
+      log('err', `${typeName(f.type)} id=${f.id}: payload did not parse (${f.payload.length}B) — reply lost, not a refusal`);
+    }
     log('rx', `${typeName(f.type)} id=${f.id} ${json ? JSON.stringify(json) : f.payload.length + 'B'}`);
     if (f.type === TYPE.EVENT && json) onEvent(json);
     if (f.type === TYPE.RESP && state.pending.has(f.id)) {
@@ -2241,10 +2254,24 @@ function renderWardrivePanel(box) {
   `;
 }
 
-// ── wardrive visibility ──────────────────────────────────────────────────────
+// ── wardrive visibility ─────────────────────────────────────────────────────────────
+
+/** True while wardrive mode is armed or capturing. A wardrive session is capture
+ *  + GPS + hash storage, all of it on the phone — the crack bridge has no part in
+ *  it, so every bridge call in the app is gated on this being false. */
+let wardriveModeOn = false;
+function wardriveActive() {
+  if (wardriveModeOn) return true;
+  const w = window.Wardrive;
+  if (w && typeof w.isRunning === 'function' && w.isRunning()) return true;
+  // Rule 22: guard the base, not the property — `capture` is null until boot wires it.
+  const cap = capture || {};
+  return !!(cap.running || cap.continuousRunning);
+}
 
 /** Toggle wardrive card visibility and hide/show stage panel card (consoleCard3). */
 function toggleWardriveMode(on) {
+  wardriveModeOn = !!on;
   const wc = document.getElementById('wardriveCard');
   if (wc) wc.classList.toggle('hidden', !on);
   // Hide the stage panel card when in wardrive mode
@@ -2410,10 +2437,13 @@ function boot() {
     log('err', 'This only works in the installed app — a browser has no USB-OTG access.');
   }
 
-  // ── Bridge keepalive ─────────────────────────────────────────────────────────
+  // ── Bridge keepalive ─────────────────────────────────────────────────────────────
   // Ping the bridge every 30 s so the status auto-recovers after the phone
-  // wakes from doze or the WiFi reconnects. Silent on failure.
+  // wakes from doze or the WiFi reconnects. Silent on failure — and silent
+  // ENTIRELY while wardriving: nothing in a wardrive session needs the LAN, so
+  // pinging a host that isn't involved just fills the log with failures.
   setInterval(async () => {
+    if (wardriveActive()) return;
     // Only ping if we're past the confirm stage (user has set a URL) and we
     // either have a stale status or the crack job would benefit from recovery.
     const cfg = bridgeConfig();

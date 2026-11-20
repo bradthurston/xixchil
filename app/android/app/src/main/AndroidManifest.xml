@@ -87,6 +87,14 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Geolocation: wardrive tags every captured handshake with a GPS fix, so the
+         Capacitor Geolocation plugin needs these declared here *and* granted at
+         runtime (Android 6+). With them missing, watchPosition's callback fires
+         with "Location permissions are not declared in manifest" and every
+         wardriving point is logged with no position. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
     <!-- USB host: the whole point of this app. required="true" keeps the store
          from offering it to devices that cannot do USB-OTG at all. -->
     <uses-feature android:name="android.hardware.usb.host" android:required="true" />

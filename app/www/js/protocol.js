@@ -20,6 +20,11 @@ export const TYPE = {
   PCAP:  0x04, // device -> phone, binary artifact
   ACK:   0x05,
   HTML:  0x06,
+  // Wardrive's continuous stream: one radiotap+802.11 frame per message, sent
+  // live while wardrive runs. Deliberately distinct from PCAP — PCAP frames are
+  // chunks of a Capture sync that the capture writer is assembling into a pcap
+  // artifact, and a live wardrive stream has no place in that assembly.
+  PCAP_CONT: 0x07,
 };
 
 const TYPE_NAME = Object.fromEntries(

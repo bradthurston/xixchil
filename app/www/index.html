@@ -91,6 +91,8 @@
     <!-- ── wardrive ───────────────────────────────────────────── -->
     <section class="card hidden" id="wardriveCard">
       <h2>Wardrive</h2>
+      <div class="wrow">Channel <input id="wardriveChannel" type="number" min="1" max="196"
+        value="6" style="width:64px;margin-left:6px;"></div>
       <button id="wardriveBtn">Start Wardrive</button>
       <div id="wardriveStatus" class="hidden">
         <div class="wrow">GPS: <span id="gpsStatus">no fix</span></div>
@@ -115,7 +117,9 @@
 <script src="./js/bridge-defaults.js" onerror="window.BRIDGE_DEFAULTS=window.BRIDGE_DEFAULTS||{}"></script>
 <script src="./js/gps.js"></script>
 <script src="./js/hashstore.js"></script>
-<script src="./js/wardrive.js"></script>
+<!-- wardrive.js is no longer loaded here: app.js imports it as a module, so this
+     tag ran the IIFE a second time. As a module it can also reach analyze.js and
+     crack.js, which is the whole point — it parses with their parsers. -->
 <script type="module" src="./js/app.js"></script>
 <script>
   // Theme toggle on consoleCard visibility — hides flow cards when disconnected.

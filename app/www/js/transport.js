@@ -55,7 +55,17 @@ export class UsbTransport {
   }
 
   async connect(device) {
-    if (this.connected) await this.disconnect();
+    // Listener lifetime == connection lifetime, unconditionally. `connected` is
+    // derived from portId, and portId is cleared by the 'detached' path below —
+    // so a reconnect after a detach used to register a SECOND 'data' listener
+    // while the first was still live. Every chunk then reached the decoder
+    // twice, and a frame that straddles a USB packet boundary was spliced into
+    // garbage: a 65-byte reply arrives as 64+1, and the duplicate copy's first
+    // byte lands where the reply's final '}' belongs, so JSON.parse fails, the
+    // reply reads as a refusal, and everything gated behind it never runs.
+    // Wardrive counted nothing for a whole drive this way (board capturing, app
+    // sitting at IDLE) because its start reply is exactly 65 bytes.
+    await this.disconnect();
 
     if (!device.hasPermission) {
       const { granted } = await plugin().requestPermission({ deviceId: device.deviceId });
@@ -102,6 +112,9 @@ export class UsbTransport {
       this.onStatus('detached', e);
       this.portId = null;
       this.deviceId = null;
+      // Drop the listeners with the connection. Leaving them registered is what
+      // made the next connect() double every chunk — see connect().
+      this._dropSubs().catch(() => {});
     }));
 
     await plugin().startReading({ portId });
@@ -114,11 +127,17 @@ export class UsbTransport {
     await plugin().write({ portId: this.portId, data: bytesToBase64(bytes) });
   }
 
-  async disconnect() {
-    for (const s of this.subs) {
+  /** Remove every plugin listener this transport registered. Safe to repeat. */
+  async _dropSubs() {
+    const subs = this.subs;
+    this.subs = [];
+    for (const s of subs) {
       try { await s.remove(); } catch { /* already gone */ }
     }
-    this.subs = [];
+  }
+
+  async disconnect() {
+    await this._dropSubs();
     if (this.portId !== null) {
       try { await plugin().stopReading({ portId: this.portId }); } catch { /* ignore */ }
       try { await plugin().close({ portId: this.portId }); } catch { /* ignore */ }
