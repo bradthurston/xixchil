@@ -132,13 +132,20 @@ const hashStore = {
   exportJSON: () => JSON.stringify(hashRecords),
 };
 const gps = { position: { lat: 34.9, lon: -87.1, accuracy: 8 }, startTracking() {}, stopTracking() {} };
+// The board refuses GET_SEGMENT for the whole deauth burst — it mutes
+// promiscuous so it cannot hear its own TX. The stub must be able to do the same,
+// or the gate cannot see the bug that killed every live run.
+let refuseSegment = false;
 const link = async (cmd, args) => {
   sent.push({ cmd, args });
   const c = String(cmd).toLowerCase();
   if (c === 'wardrive_start') return { ok: true, channel: args?.channel ?? 1 };
   if (c === 'wardrive_stop') return { ok: true };
-  if (c === 'get_segment') return { ok: true, sent: 8 };
-  if (c === 'deauth_now') return { ok: true, started: true, count: args?.count };
+  if (c === 'get_segment') {
+    if (refuseSegment) return { ok: false, error: 'wardrive not capturing' };
+    return { ok: true, sent: 8 };
+  }
+  if (c === 'deauth_now') return { ok: true, started: true, count: args?.count, interval_ms: args?.interval_ms };
   return { ok: true };
 };
 
@@ -416,6 +423,53 @@ check('the ingest backlog is bounded, and the overflow is counted not hidden',
 await drainIngest();
 check('queued frames are still processed after the burst (nothing lost silently)',
   W.getStats().ingestQueued === 0, JSON.stringify(W.getStats().ingestQueued));
+
+// ── a deauth burst we started must not read as a dead board ─────────────────
+// Live, 2026-11-20: 15:17:42.540 wardrive deauth burst accepted; 42.797 the
+// 250 ms poll got {"ok":false,"error":"wardrive not capturing"} because the board
+// was mid-burst; 42.812 the app stopped the session. Two runs, ~2 s each, no
+// operator input — the app was killing its own run with a refusal it caused.
+// The board resumes by itself (wardrive_poll() flips back to CAPTURING once
+// tx_running() clears); the app has to wait it out instead of declaring failure.
+
+check('wardrive.js bounds the burst it waits out, and how many refusals are real',
+  /BURST_MARGIN_MS\s*=\s*\d+/.test(wardriveSrc) && /POLL_FAIL_LIMIT\s*=\s*\d+/.test(wardriveSrc));
+check('wardrive.js takes the burst window from the board\'s reply, not its request',
+  /resp\.count/.test(wardriveSrc) && /resp\.interval_ms/.test(wardriveSrc));
+
+if (W.getState() !== 'IDLE') await W.stop();
+sent.length = 0;
+refuseSegment = true;                    // the board is mid-burst from here on
+await W.start();
+W.onSegmentChunk(beacon(BSSID, SSID, 6));
+W.onSegmentChunk(eapolFrame({ fromAP: false, keyInfo: 0x010a, nonce: new Uint8Array(32).fill(11) }));
+await drainIngest();
+
+let sawBurst = false;
+for (let i = 0; i < 60; i++) {           // wait for it to actually fire and be inside
+  const s = W.getStats();
+  if (s.deauthCount > 0 && s.burstRemainingMs > 0) { sawBurst = true; break; }
+  await sleep(50);
+}
+check('a live-shaped deauth burst opens a window the poll loop honours', sawBurst,
+  JSON.stringify({ state: W.getState(), s: W.getStats() }));
+check('a refusal inside that burst does NOT end the session',
+  W.getState() === 'CAPTURING' && !sent.some((s) => s.cmd === 'wardrive_stop'),
+  JSON.stringify({ state: W.getState(), cmds: sent.map((s) => s.cmd).slice(-6) }));
+
+// Past the window a refusal is real — but it still takes POLL_FAIL_LIMIT in a row,
+// so one blip cannot kill a run either.
+let stopped = false;
+for (let i = 0; i < 120; i++) {
+  if (W.getState() === 'IDLE') { stopped = true; break; }
+  await sleep(50);
+}
+check('refusals OUTSIDE a burst still end the session (a real dead board stops it)',
+  stopped && sent.some((s) => s.cmd === 'wardrive_stop'),
+  JSON.stringify({ state: W.getState(), cmds: sent.map((s) => s.cmd).slice(-6) }));
+check('and it took repeated refusals, not a single one',
+  W.getStats().pollFailStreak >= 3, JSON.stringify(W.getStats().pollFailStreak));
+refuseSegment = false;
 
 console.log(`\n${pass} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
