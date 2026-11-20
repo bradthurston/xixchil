@@ -41,6 +41,7 @@
 #include "wardrive.h"
 #include "nrf24.h"
 #include "portal.h"
+#include "pmkid.h"
 
 // nRF24 init-once flag. Declared at file scope because cmd_status references it.
 static bool g_nrf_init_done = false;
@@ -398,6 +399,67 @@ static void cmd_capture_stop(uint8_t id) {
 static void cmd_capture_stats(uint8_t id) {
     JsonDocument d;
     cap_stats(d);
+    reply_json(id, true, d);
+}
+
+// ── PMKID probe (bench only) ────────────────────────────────────────────────
+// Phase 0 of docs/plans/2026-11-20-native-pmkid-harvest.md. Associates to a
+// named AP with a dummy PSK while the promiscuous capture runs, to answer
+// whether the STA stack associates and whether we see our own inbound M1. Not a
+// finished module — the go/no-go hardware test for the whole PMKID design.
+static void cmd_pmkid_probe_start(uint8_t id, JsonDocument& args) {
+    if (portal_running()) { send_error(id, "portal running — the radio is an AP"); return; }
+    if (tx_running())     { send_error(id, "burst in flight — stop it first"); return; }
+    if (probe_reply_running()) { send_error(id, "probe reply running — the radio is answering"); return; }
+    if (beacon_pool_running()) { send_error(id, "beacon pool running — the radio is transmitting"); return; }
+
+    const char* ssid = args["ssid"];
+    if (ssid == nullptr || ssid[0] == '\0') { send_error(id, "ssid required"); return; }
+
+    int ch = args["channel"] | (int)CAP_DEFAULT_CH;
+    if (ch < 1 || ch > 14) { send_error(id, "channel must be 1..14"); return; }
+
+    uint8_t bssid[6];
+    bool bssid_set = false;
+    const char* bss = args["bssid"];
+    if (bss != nullptr && bss[0]) {
+        if (!pmkid_parse_bssid(bss, bssid)) { send_error(id, "bssid must be aa:bb:cc:dd:ee:ff"); return; }
+        bssid_set = true;
+    }
+
+    // Deliberately wrong; the point is the association attempt, not the key.
+    const char* psk  = args["psk"] | "pmkidprobe0000000000000000000000";
+    uint32_t    dur  = args["duration_ms"] | (uint32_t)CAP_DEFAULT_MS;
+    int         snap = args["snaplen"] | (int)CAP_SNAPLEN_MAX;
+    if (dur == 0 || dur > CAP_MAX_MS) dur = CAP_DEFAULT_MS;
+    if (snap < 32 || snap > CAP_SNAPLEN_MAX) snap = CAP_SNAPLEN_MAX;
+
+    String err;
+    if (!pmkid_probe_begin((uint8_t)ch, ssid, bssid, bssid_set, psk, dur, (uint16_t)snap, err)) {
+        send_error(id, err.c_str());
+        return;
+    }
+
+    JsonDocument d;
+    d["started"]     = true;
+    d["ssid"]        = ssid;
+    d["channel"]     = ch;
+    d["duration_ms"] = dur;
+    d["note"]        = "armed with a dummy PSK; pull the capture and look for an inbound M1";
+    reply_json(id, true, d);
+}
+
+static void cmd_pmkid_probe_stop(uint8_t id) {
+    pmkid_probe_end();
+    JsonDocument d;
+    pmkid_probe_stats(d);
+    d["stopped"] = true;
+    reply_json(id, true, d);
+}
+
+static void cmd_pmkid_probe_status(uint8_t id) {
+    JsonDocument d;
+    pmkid_probe_stats(d);
     reply_json(id, true, d);
 }
 
@@ -1177,6 +1239,9 @@ static void dispatch(const uint8_t* payload, size_t len, uint8_t id) {
     else if (cmd_is(cmd, "capture_stop"))  cmd_capture_stop(id);
     else if (cmd_is(cmd, "capture_get"))   cmd_capture_get(id, args);
     else if (cmd_is(cmd, "capture_stats")) cmd_capture_stats(id);
+    else if (cmd_is(cmd, "pmkid_probe_start"))  cmd_pmkid_probe_start(id, args);
+    else if (cmd_is(cmd, "pmkid_probe_stop"))   cmd_pmkid_probe_stop(id);
+    else if (cmd_is(cmd, "pmkid_probe_status")) cmd_pmkid_probe_status(id);
     else if (cmd_is(cmd, "tx_frame"))      cmd_tx_frame(id, args);
     else if (cmd_is(cmd, "tx_stop"))       cmd_tx_stop(id);
     else if (cmd_is(cmd, "tx_status"))     cmd_tx_status(id);
