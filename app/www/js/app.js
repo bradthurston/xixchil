@@ -503,6 +503,7 @@ function applyCaptureView() {
   const connected = !!card && !card.classList.contains('hidden');
   document.getElementById('analyzerCard')?.classList.toggle('hidden', captureView !== 'channels');
   document.getElementById('consoleCard3')?.classList.toggle('hidden', captureView !== 'packets' || !connected);
+  document.getElementById('captureOffline')?.classList.toggle('hidden', connected || captureView !== 'packets');
   document.getElementById('wardriveCard')?.classList.toggle('hidden', captureView !== 'wardrive');
   // View and mode are the same thing now: while the Wardrive view is open the
   // session is a wardrive session, which is what silences the bridge keepalive.

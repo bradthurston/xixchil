@@ -191,7 +191,7 @@ header h1.brand { margin: 0; flex: 1 1 auto; min-width: 0; display: flex; align-
    is 7.7 MB; Georgia is a serif the phone already has. The fallback chain keeps
    it a serif even where Georgia is absent (Android's Noto Serif). */
 header .wordmark {
-  font: bold 24px Georgia, "Noto Serif", "Times New Roman", serif;
+  font: 400 24px "Yu Mincho", "Noto Serif CJK JP", "Noto Serif", serif; letter-spacing: 1px;
   letter-spacing: 1px; color: var(--fg); white-space: nowrap;
 }
 /* The hanko. It used to live inside the wordmark's SVG, after the last glyph;
@@ -853,3 +853,12 @@ details.atk[open] .atkchev { transform: rotate(180deg); }
 @media (prefers-reduced-motion: reduce) {
   button, .viewtab, .pbar > span, .anfill { transition: none; }
 }
+
+.hero { display: flex; justify-content: space-between; align-items: center; margin: 12px 12px 16px 16px; }
+.hero-text { flex: 1; }
+.seal-text { font-size: 11px; letter-spacing: 2px; color: var(--accent); text-transform: uppercase; margin-bottom: 4px; }
+.hero-title { margin: 0 0 4px; font-size: 25px; font-weight: 300; }
+.hero-sub { margin: 0; color: var(--muted); font-size: 15px; }
+figure.mantis { margin: 0; }
+figure.mantis img { width: 105px; height: 70px; object-fit: contain; border: none !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; }
+.card h2 { font-weight: 400; }

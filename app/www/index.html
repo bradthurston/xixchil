@@ -66,40 +66,42 @@
            reach within ~2% of the top edge and a hind leg within ~2% of the bottom,
            so any band crop takes the insect's head-tip or its feet with it. The
            paper is the app's own cream, so it reads as a header, not a pasted photo. -->
-      <figure class="mantis">
-        <img src="assets/mantis-banner.jpg"
-             alt="A praying mantis in black ink on warm paper — forelegs folded, long body slanting away">
-      </figure>
+      <div class="hero">
+        <div class="hero-text">
+          <div class="seal-text">FIELD WORKSPACE</div>
+          <h1 class="hero-title">Workstation</h1>
+          <p class="hero-sub">System readiness</p>
+        </div>
+        <figure class="mantis">
+          <img src="assets/mantis-banner.jpg"
+               alt="A praying mantis in black ink on warm paper — forelegs folded, long body slanting away">
+        </figure>
+      </div>
 
-      <section class="card" id="connectCard">
-        <h2>Device</h2>
-        <div id="deviceList"></div>
-        <button class="block ghost" id="refreshBtn" style="margin-top:10px"></button>
-      </section>
+      <section class="card" id="connectionsCard">
+        <h2>Connections</h2>
+        
+        <div id="connectCard" class="conn-block">
+          <h2 class="sechead" style="margin-top:0; margin-bottom:8px; font-weight:400; font-size:13px; text-transform:uppercase; letter-spacing:1px; color:var(--muted);">Device</h2>
+          <div id="deviceList"></div>
+          <button class="block ghost" id="refreshBtn" style="margin-top:8px"></button>
+        </div>
 
-        <section class="card hidden" id="consoleCard">
-        <h2>Link</h2>
-        <div id="deviceInfo"></div>
-        <div class="row" style="margin-top:12px">
-          <button id="pingBtn"></button>
-          <button class="ghost" id="linkBtn"></button>
+        <div id="consoleCard" class="hidden conn-block" style="border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px;">
+          <h2 class="sechead" style="margin-top:0; margin-bottom:8px; font-weight:400; font-size:13px; text-transform:uppercase; letter-spacing:1px; color:var(--muted);">Link</h2>
+          <div id="deviceInfo"></div>
+          <div class="row" style="margin-top:8px">
+            <button id="pingBtn"></button>
+            <button class="ghost" id="linkBtn"></button>
+          </div>
+        </div>
+
+        <div id="bridgeCard" class="conn-block" style="border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px;">
+          <h2 class="sechead" style="margin-top:0; margin-bottom:8px; font-weight:400; font-size:13px; text-transform:uppercase; letter-spacing:1px; color:var(--muted);">Bridge</h2>
+          <div id="bridgeHome"></div>
         </div>
       </section>
 
-      <!-- The GPU box, without its credentials: where it is, whether it answers, what
-           it would be searching with. Set once and left alone, so the URL and token
-           live in Settings (the gear in the header) and this card only reads out.
-           Tailscale rides along here because the bridge is only reachable when the
-           tunnel is up. -->
-      <section class="card" id="bridgeCard">
-        <h2>Bridge</h2>
-        <div id="bridgeHome"></div>
-      </section>
-
-      <!-- One row per module, one list, every page reachable from here. This is the
-           only navigation on Home: the chip row above the modules and the module
-           grid used to point at the same two pages three times over. The tabbar
-           stays for switching while you are already working. -->
       <section class="card hidden" id="hubCard">
         <h2>Modules</h2>
         <div class="statuslist" id="hubModules"></div>
@@ -113,9 +115,13 @@
          decides what is on screen. -->
     <section class="page" id="page-capture">
 
-        <section class="card hidden" id="consoleCard2">
-        <h2>Capture</h2>
+        <div id="captureViewsWrapper" style="margin: 12px 16px;">
         <div class="viewsw" id="captureViews"></div>
+      </div>
+      <div id="captureOffline" class="empty hidden">Offline<br>Connect ESP32 to start capturing.</div>
+      
+      <section class="card hidden" id="consoleCard2" style="display:none;">
+        <!-- Keeps the ID around for the MutationObserver -->
       </section>
 
         <section class="card hidden" id="consoleCard3">

@@ -303,7 +303,7 @@ ok(/const box = \$\('#settingsPanel'\)/.test(wire) && !/\$\('['"`]#/.test(wire),
 // a member of any card.
 ok(!/id="hubActions"/.test(html) && !/\$\('#hubActions'\)/.test(js),
    'the Home chip row is gone — one navigation list, not three');
-ok(/<figure class="mantis">\s*<img src="assets\/mantis-banner\.jpg"/.test(html),
+ok(/<figure class="mantis">[\s\S]*?<img src="assets\/mantis-banner\.jpg"/.test(html),
    'the mantis sits directly under the title, outside every card');
 ok((html.match(/<img\b/g) || []).length === 1,
    'the Home page still has exactly one image — the banner, shown whole');
@@ -494,8 +494,8 @@ ok(/button:disabled\s*\{\s*opacity:\s*\.4/.test(css),
 // Type. 15px system everywhere, one 24px serif wordmark, and the panel headings
 // back to sentence case at 16px instead of 13px uppercase.
 ok(/font:\s*15px\/1\.5 system-ui/.test(css), 'the global type is 15px system');
-ok(/\.wordmark\s*\{[\s\S]*?font:\s*bold 24px Georgia,\s*"Noto Serif"/.test(css),
-   'the wordmark is 24px Georgia, with a serif fallback chain');
+ok(/\.wordmark\s*\{[\s\S]*?font:\s*400 24px "Yu Mincho"/.test(css),
+   'the wordmark is a refined Japanese-inspired serif');
 ok(/<span class="wordmark">Xixchil<\/span>/.test(html),
    'the wordmark is type again, not seven glyphs of vector Mincho');
 // The seal is the part that made the mark read as designed, so it survives the
