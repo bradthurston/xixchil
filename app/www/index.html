@@ -34,17 +34,10 @@
          fonts/LICENSE-IPA.txt. Regenerate with tools/make-wordmark.py. -->
     <h1 class="brand"><svg class="wordmark" viewBox="0 0 78.95 16.75" width="78.95" height="16.75" role="img" aria-label="Xixchil" focusable="false"><path transform="translate(0.000,14.796) scale(0.009563,-0.009563)" d="M1481 20H924V77Q1094 77 1094 139Q1094 178 1042 247L723 680L385 227Q338 161 338 133Q338 77 516 77V20H0V77Q161 80 291 254L664 755L324 1220Q190 1404 35 1407V1464H592V1407Q420 1404 420 1343Q420 1310 475 1232L758 845L1061 1253Q1110 1318 1110 1351Q1110 1404 932 1407V1464H1446V1407Q1289 1404 1157 1228L815 774L1192 262Q1324 80 1481 77Z"/><path transform="translate(14.105,14.796) scale(0.009563,-0.009563)" d="M323 1470Q367 1470 397 1439Q428 1408 428 1365Q428 1263 323 1263Q221 1263 221 1365Q221 1470 323 1470ZM565 20H78V77Q145 77 188 90Q256 108 256 207V819Q256 916 207 934Q176 946 78 946V1008Q245 1011 391 1041V207Q391 115 438 96Q484 77 565 77Z"/><path transform="translate(19.996,14.796) scale(0.009563,-0.009563)" d="M1073 20H633V77Q756 77 756 118Q756 137 707 205L516 463L287 184Q252 140 252 118Q252 77 391 77V20H0V77Q111 77 219 211L469 518L244 811Q189 884 150 916Q108 945 27 948V1008H461V948Q340 945 340 905Q340 884 389 819L557 596L760 846Q795 890 795 910Q795 945 649 948V1008H1042V948Q984 948 950 930Q906 909 827 815L602 545L850 217Q950 81 1073 77Z"/><path transform="translate(30.180,14.796) scale(0.009563,-0.009563)" d="M1010 248Q875 -12 596 -12Q392 -12 258 125Q117 269 117 508Q117 758 267 908Q398 1043 602 1043Q774 1043 889 953Q977 883 977 803Q977 698 883 698Q793 698 793 782Q793 841 842 862Q768 974 609 974Q430 974 341 814Q269 686 269 519Q269 330 367 207Q465 82 621 82Q831 82 951 293Z"/><path transform="translate(40.661,14.796) scale(0.009563,-0.009563)" d="M1226 20H733V77Q798 77 845 88Q911 106 911 207V637Q911 946 684 946Q462 946 370 701V207Q370 115 417 96Q463 77 548 77V20H55V77Q127 77 169 90Q235 108 235 207V1276Q235 1369 188 1388Q157 1401 57 1401V1464Q226 1467 370 1495V836Q502 1034 712 1034Q1048 1034 1048 666V207Q1048 115 1095 96Q1141 77 1226 77Z"/><path transform="translate(52.730,14.796) scale(0.009563,-0.009563)" d="M323 1470Q367 1470 397 1439Q428 1408 428 1365Q428 1263 323 1263Q221 1263 221 1365Q221 1470 323 1470ZM565 20H78V77Q145 77 188 90Q256 108 256 207V819Q256 916 207 934Q176 946 78 946V1008Q245 1011 391 1041V207Q391 115 438 96Q484 77 565 77Z"/><path transform="translate(58.620,14.796) scale(0.009563,-0.009563)" d="M552 20H55V77Q121 77 167 90Q237 105 237 206V1276Q237 1369 190 1388Q159 1401 57 1401V1464Q222 1467 372 1495V206Q372 113 427 92Q467 77 552 77Z"/><g transform="rotate(-7 73.499 11.296)"><rect x="69.999" y="7.796" width="7.0" height="7.0" rx="1.0" fill="var(--accent)"/><g transform="translate(73.499 11.296)"><rect x="-2.1" y="-2.6" width="4.2" height="1.05" fill="var(--bg)"/><rect x="-2.1" y="0.5" width="4.2" height="1.05" fill="var(--bg)"/></g></g></svg></h1>
     <span class="pill" id="connPill"><span class="dot"></span>offline</span>
-    <button id="themeBtn" class="pill ghost" style="margin-left:auto;font-size:11px;padding:3px 9px"
-            title="Ink or paper" aria-label="Switch between ink and paper" aria-pressed="false">
-      <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
-        <circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" stroke-width="1.5"/>
-        <path d="M6 1.4a4.6 4.6 0 0 0 0 9.2z" fill="currentColor"/>
-      </svg>
-      <span id="themeName">paper</span>
-    </button>
+    <button id="logsBtn" class="pill ghost" style="font-size:11px;padding:3px 9px"
+            title="Logs" aria-label="Logs"></button>
     <button id="gearBtn" class="pill ghost" style="font-size:11px;padding:3px 9px"
             title="Settings" aria-label="Settings"></button>
-    <button id="resetBtn" class="pill ghost" style="font-size:11px;padding:2px 8px">reset</button>
   </header>
 
   <main>
@@ -100,20 +93,22 @@
     </section>
 
     <!-- ═══ CAPTURE ═════════════════════════════════════════════════════════
-         Everything that listens: the staged flow, the channel analyzer, the
-         wardrive. Nothing on this page transmits. -->
+         Everything that listens: packets, the channel analyzer, the wardrive.
+         Nothing on this page transmits, and nothing here starts by itself —
+         the three views below are three separate things, and opening one only
+         decides what is on screen. -->
     <section class="page" id="page-capture">
 
         <section class="card hidden" id="consoleCard2">
-        <h2>Flow</h2>
-        <div class="stages" id="stages"></div>
+        <h2>Capture</h2>
+        <div class="viewsw" id="captureViews"></div>
       </section>
 
         <section class="card hidden" id="consoleCard3">
         <div id="stagePanel"></div>
       </section>
 
-      <section class="card" id="analyzerCard">
+      <section class="card hidden" id="analyzerCard">
         <h2>Channel analyzer</h2>
         <div id="analyzerPanel"></div>
       </section>
@@ -134,6 +129,23 @@
           <div class="wrow">Duration: <span id="wDuration">0s</span></div>
         </div>
         <div id="wardriveLog" style="max-height:100px; overflow-y:auto; font-size:11px; margin-top:10px;"></div>
+      </section>
+    </section>
+
+    <!-- ═══ ANALYSIS ════════════════════════════════════════════════════════
+         Two views over one subject, and they answer different questions:
+         Observations is what is on the air (analyze.js — APs, clients, leaked
+         SSIDs); Assessment is what is worth doing about it (analysis.js — the
+         ranked targets the Attacks page fires at). Separate modules, separate
+         data structures, one workspace. -->
+    <section class="page" id="page-analysis">
+
+      <section class="card">
+        <div class="viewsw" id="analysisViews"></div>
+      </section>
+
+      <section class="card">
+        <div id="analysisPanel"></div>
       </section>
     </section>
 
@@ -225,6 +237,42 @@
         <h2>Settings</h2>
         <div id="settingsPanel"></div>
       </section>
+
+      <!-- The theme switch and reset used to live in the header, beside the
+           connection pill — one tap away mid-capture, next to controls you use
+           while working. Neither is that: the theme is a display preference and
+           reset throws the session away. They belong where you go to change how
+           the app is set up, so they live here now.
+
+           Both keep the ids and the handlers they had. The theme button is wired
+           by the <script> at the end of the document, which looks its own ids up
+           at load and does not care where they are in the page; resetAll is
+           bound in boot(). Moving the markup moved nothing else. -->
+      <section class="card">
+        <h2>Display</h2>
+        <div class="row">
+          <button id="themeBtn" class="pill" title="Ink or paper"
+                  aria-label="Switch between ink and paper" aria-pressed="false">
+            <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+              <circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M6 1.4a4.6 4.6 0 0 0 0 9.2z" fill="currentColor"/>
+            </svg>
+            <span id="themeName">paper</span>
+          </button>
+        </div>
+        <div class="pnlnote">The label names the theme you get by pressing it: ink is the
+          dark default, paper is the light one. The choice is kept between sessions.</div>
+      </section>
+
+      <section class="card">
+        <h2>Reset</h2>
+        <div class="row">
+          <button id="resetBtn" class="danger">reset</button>
+        </div>
+        <div class="pnlnote">Stops anything running, disconnects from the board and throws
+          away the session — the capture, what the analyzer read, the plan. Your bridge
+          settings, the karma and mana settings and the presets survive it.</div>
+      </section>
     </section>
 
     <!-- ═══ LOGS ════════════════════════════════════════════════════════════
@@ -252,10 +300,15 @@
 <script type="module" src="./js/app.js"></script>
 <script>
   // Theme toggle on consoleCard visibility — hides flow cards when disconnected.
+  // The two mirrors are connection-gated; the Capture page's own view logic runs
+  // after, because which of its three views is open is a second, independent
+  // question (see applyCaptureView in app.js).
   const syncCards = () => {
-    const on = document.getElementById('consoleCard').classList.contains('hidden') === false;
+    const card = document.getElementById('consoleCard');
+    const on = card.classList.contains('hidden') === false;
     ['consoleCard2', 'consoleCard3'].forEach((id) =>
-      document.getElementById(id).classList.toggle('hidden', !on));
+      document.getElementById(id)?.classList.toggle('hidden', !on));
+    if (typeof window.applyCaptureView === 'function') window.applyCaptureView();
   };
   new MutationObserver(syncCards)
     .observe(document.getElementById('consoleCard'), { attributes: true, attributeFilter: ['class'] });

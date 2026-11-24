@@ -6,7 +6,7 @@
 
 import { encodeFrame, encodeCmd, FrameDecoder, payloadJson, TYPE, typeName } from './protocol.js';
 import { UsbTransport } from './transport.js';
-import { Icon, STAGE_ICONS } from './icons.js';
+import { Icon } from './icons.js';
 import { CaptureSession } from './capture.js';
 import { analyzeChunks, findings, kaputCheck } from './analyze.js';
 import { plan, reportText, topTarget } from './analysis.js';
@@ -461,29 +461,83 @@ function renderDeviceInfo(info) {
     </dl>`;
 }
 
-function renderStages() {
-  // Attack moved to its own tab, so the flow bar is only what listens and
-  // what reads what was heard.
-  const order = ['capture', 'analyze', 'analysis', 'wardrive'];
-  const labels = { capture: 'Capture', analyze: 'Analyze', analysis: 'Analysis', attack: 'Attack', wardrive: 'Wardrive' };
-  const box = $('#stages');
+// ── views ─────────────────────────────────────────────────────────────────────
+//
+// Capture and Analysis each hold a set of views instead of a numbered flow. The
+// difference matters: a step numbered a position in one path and moving along it
+// was the point, so tapping a step was a small event. A view is just what you are
+// looking at, and switching views does exactly one thing — it changes what is on
+// screen. Nothing starts because a view was opened.
+
+/** Draw Capture's switcher. Rebuilt on every repaint, so the lit view is always
+ *  the one actually on screen rather than the last one tapped. */
+function renderCaptureViews() {
+  const box = $('#captureViews');
   if (!box) return;
-  box.innerHTML = order.map((s, i) => `
-    <button class="stage ${state.stage === s ? 'active' : ''}" data-stage="${s}">
-      <span class="num">STEP ${i + 1}</span>
-      ${Icon(STAGE_ICONS[s], { size: 22 })}
-      <span class="label">${labels[s]}</span>
+  box.innerHTML = CAPTURE_VIEWS.map((v) => `
+    <button class="viewtab ${captureView === v.id ? 'active' : ''}" data-capture-view="${v.id}"
+            aria-pressed="${captureView === v.id}">
+      ${Icon(v.icon, { size: 16 })}<span>${v.label}</span>
     </button>`).join('');
-  box.querySelectorAll('.stage').forEach((el) => {
-    el.addEventListener('click', () => {
-      const newStage = el.dataset.stage;
-      state.stage = newStage;
-      renderStages();
-      refreshPanels();
-      // Wardrive card visibility
-      toggleWardriveMode(newStage === 'wardrive');
-    });
-  });
+}
+
+/** Draw Analysis' switcher. Two views over one subject — the labels are new, the
+ *  modules and data behind them are not. */
+function renderAnalysisViews() {
+  const box = $('#analysisViews');
+  if (!box) return;
+  box.innerHTML = ANALYSIS_VIEWS.map((v) => `
+    <button class="viewtab ${analysisView === v.id ? 'active' : ''}" data-analysis-view="${v.id}"
+            aria-pressed="${analysisView === v.id}">
+      ${Icon(v.icon, { size: 16 })}<span>${v.label}</span>
+    </button>`).join('');
+}
+
+/** Which of Capture's three cards is on screen. The two console mirrors are
+ *  connection-gated first (the observer in index.html), so the rule here is
+ *  view + connection, in that order — and this is the only thing that decides
+ *  it, so the observer and this function cannot fight over the same class. */
+function applyCaptureView() {
+  renderCaptureViews();
+  const card = document.getElementById('consoleCard');
+  const connected = !!card && !card.classList.contains('hidden');
+  document.getElementById('analyzerCard')?.classList.toggle('hidden', captureView !== 'channels');
+  document.getElementById('consoleCard3')?.classList.toggle('hidden', captureView !== 'packets' || !connected);
+  document.getElementById('wardriveCard')?.classList.toggle('hidden', captureView !== 'wardrive');
+  // View and mode are the same thing now: while the Wardrive view is open the
+  // session is a wardrive session, which is what silences the bridge keepalive.
+  wardriveModeOn = captureView === 'wardrive';
+  labelWardriveBtn();
+}
+// The console-card observer in index.html re-asserts this after it mirrors the
+// connection state, so a view switch and a connect/disconnect cannot disagree.
+window.applyCaptureView = applyCaptureView;
+
+/** Open a Capture view. Guarded by the list, and it starts nothing. */
+function setCaptureView(id) {
+  if (!CAPTURE_VIEWS.some((v) => v.id === id)) return;
+  captureView = id;
+  applyCaptureView();
+}
+
+/** Paint whichever Analysis view is open. Only the open one: both write their
+ *  whole box, so painting the other would wipe the one being read. */
+function renderAnalysisHost() {
+  const box = $('#analysisPanel');
+  if (!box) return;
+  if (analysisView === 'assessment') renderAnalysisPanel(box);
+  else renderAnalyzePanel(box);
+}
+
+function applyAnalysisView() {
+  renderAnalysisViews();
+  renderAnalysisHost();
+}
+
+function setAnalysisView(id) {
+  if (!ANALYSIS_VIEWS.some((v) => v.id === id)) return;
+  analysisView = id;
+  applyAnalysisView();
 }
 
 // ── events from the device ────────────────────────────────────────────────────
@@ -518,9 +572,9 @@ function onEvent(json) {
     return;
   }
   // 'stage' and 'hb' describe the DEVICE's radio state. state.stage is the
-  // OPERATOR's position in the flow. Related, but not the same thing — so one
-  // never moves the other. A board that says "idle" is not the operator
-  // deciding to leave the Capture step.
+  // operator's position, and with the step bar gone that is only ever the Capture
+  // panel's packets view. Related, but not the same thing — so one never moves the
+  // other. A board that says "idle" is not the operator leaving the view.
 }
 
 // ── capture panel ─────────────────────────────────────────────────────────────
@@ -557,21 +611,19 @@ function fmtBytes(n) {
   return (n / 1048576).toFixed(2) + ' MB';
 }
 
+/** The Capture page's Packets view: the sniffing controls and the buffer.
+ *
+ *  `state.stage` used to name the operator's position in the four-step bar. The
+ *  bar is gone, so this panel can only be asked for one thing, and anything else
+ *  left in `state.stage` — legacy session state, or the 'attack' value that has
+ *  been dead since Attack became its own tab — is reset rather than rendering an
+ *  empty box. There is deliberately no 'attack' branch: this guard would have
+ *  reset the value first, so it would only ever look like working code. */
 function renderStagePanel() {
   const box = $('#stagePanel');
   if (!box) return;
-  // `state.stage` can still hold 'attack' from before the split. Rather than
-  // render an empty panel, fall back to the first stage this panel owns. There is
-  // deliberately no 'attack' branch below: Attacks is its own page now, and a branch
-  // here would be unreachable — this guard would have reset the value first, so it
-  // would only ever look like working code.
-  if (!['capture', 'analyze', 'analysis', 'wardrive'].includes(state.stage)) state.stage = 'capture';
-  if (state.stage === 'capture') { renderCapturePanel(box); return; }
-  if (state.stage === 'analyze') { renderAnalyzePanel(box); return; }
-  if (state.stage === 'analysis') { renderAnalysisPanel(box); return; }
-  if (state.stage === 'wardrive') { renderWardrivePanel(box); return; }
-  box.innerHTML = `<div class="empty">${Icon(STAGE_ICONS[state.stage], { size: 30 })}
-    <strong>${state.stage}</strong><br>Not wired yet.</div>`;
+  if (state.stage !== 'capture') state.stage = 'capture';
+  renderCapturePanel(box);
 }
 
 function renderCapturePanel(box) {
@@ -795,7 +847,7 @@ function renderAnalyzePanel(box) {
     <div class="stagehead">
       ${Icon('analyze', { size: 22 })}
       <div>
-        <div class="stagename">Analyze</div>
+        <div class="stagename">Observations</div>
         <div class="stagesub">Read the captured frames and work out what is on the air — access
           points, their security, and what devices are asking for.</div>
       </div>
@@ -926,7 +978,7 @@ function renderAnalysisPanel(box) {
     <div class="stagehead">
       ${Icon('analysis', { size: 22 })}
       <div>
-        <div class="stagename">Analysis</div>
+        <div class="stagename">Assessment</div>
         <div class="stagesub">Turn the inventory into a plan — what is worth doing, in what
           order, and why. Nothing here touches the radio.</div>
       </div>
@@ -2055,10 +2107,9 @@ function onPickTarget(e) {
   if (!isNaN(idx)) {
     selectedTargetIndex = idx;
     // Take the operator to the Attacks PAGE. Attack is its own tab since the
-    // split, so `state.stage = 'attack'` is dead: renderStagePanel() treats
-    // 'attack' as a stage it does not own and resets it to 'capture'
-    // (see renderStagePanel), so the pick used to repaint the Capture step and
-    // leave the operator with no way to reach "Fire the burst".
+    // split, so `state.stage = 'attack'` is dead: the Capture panel can only be
+    // the packets view now, and a pick that only set the old stage repainted
+    // Capture and left the operator with no way to reach "Fire the burst".
     setPage('attacks');
     // Land on the card the pick was for, not the top of a collapsed list.
     openAttackId = 'handshake';
@@ -2427,11 +2478,11 @@ function renderImportResult() {
  *  extracts and the bridge searches — so this does not wait for a device.
  *
  *  This used to unhide the Capture page's flow cards and set `state.stage = 'attack'`.
- *  The cards are already revealed by the observer on #consoleCard, and 'attack' is a
- *  stage renderStagePanel() does not own — its guard resets anything outside
- *  capture/analyze/analysis/wardrive to 'capture' before the branch that would have
- *  used it, so the import repainted the Capture step and left the operator with no
- *  on-screen route to the handshake they had just imported.
+ *  The cards are already revealed by the observer on #consoleCard, and 'attack' is
+ *  a stage nothing owns any more — the Capture panel resets anything that is not
+ *  'capture' to 'capture' before it paints, so the import repainted the Capture
+ *  step and left the operator with no on-screen route to the handshake they had
+ *  just imported.
  */
 function revealCrackAfterImport() {
   if (!handshakeResult?.handshakes?.length) return;
@@ -2512,28 +2563,6 @@ async function onCrackRun() {
   refreshPanels();
 }
 
-// ── wardrive panel ────────────────────────────────────────────────────────────
-
-function renderWardrivePanel(box) {
-  // The wardrive card is shown alongside, not inside the stage panel
-  // Just show a brief status summary
-  const w = window.Wardrive;
-  const running = w && w.isRunning();
-  box.innerHTML = `
-    <div class="stagehead">
-      ${Icon('scan', { size: 22 })}
-      <div>
-        <div class="stagename">Wardrive</div>
-        <div class="stagesub">Continuous capture with GPS-tagged deauth and handshake detection.
-          ${running ? 'Active — toggle with the Wardrive card below.' : 'Start from the Wardrive card below.'}</div>
-      </div>
-    </div>
-    <div class="pnlnote">GPS is tagged to every captured handshake. Sessions are stored in
-      localStorage and can be exported as .22000 or JSON for offline analysis.</div>
-    ${running ? '<div class="finding low"><div class="ftitle">' + Icon('check', { size: 15 }) + 'Running</div></div>' : ''}
-  `;
-}
-
 // ── wardrive visibility ─────────────────────────────────────────────────────────────
 
 /** True while wardrive mode is armed or capturing. A wardrive session is capture
@@ -2549,26 +2578,31 @@ function wardriveActive() {
   return !!(cap.running || cap.continuousRunning);
 }
 
-/** Toggle wardrive card visibility and hide/show stage panel card (consoleCard3). */
-function toggleWardriveMode(on) {
-  wardriveModeOn = !!on;
-  const wc = document.getElementById('wardriveCard');
-  if (wc) wc.classList.toggle('hidden', !on);
-  // Hide the stage panel card when in wardrive mode
-  const card3 = document.getElementById('consoleCard3');
-  if (card3) card3.classList.toggle('hidden', on);
-  // Re-label wardrive button text
+/** Match the wardrive button to whether the wardrive is actually running. Reads
+ *  the engine, never sets it: opening the Wardrive view must not start one. */
+function labelWardriveBtn() {
   const btn = document.getElementById('wardriveBtn');
-  if (btn) {
-    const w = window.Wardrive;
-    if (w && w.isRunning()) {
-      btn.textContent = 'Stop Wardrive';
-      btn.className = 'danger';
-    } else {
-      btn.textContent = 'Start Wardrive';
-      btn.className = '';
-    }
+  if (!btn) return;
+  const w = window.Wardrive;
+  if (w && w.isRunning()) {
+    btn.textContent = 'Stop Wardrive';
+    btn.className = 'danger';
+  } else {
+    btn.textContent = 'Start Wardrive';
+    btn.className = '';
   }
+}
+
+/** Name wardrive as the open Capture view (true) or leave it (false).
+ *
+ *  This used to be the only thing that showed the wardrive card, because wardrive
+ *  was step 4 of the bar. The Capture views own card visibility now, so this is a
+ *  thin alias onto applyCaptureView() — kept for the boot call and for anything
+ *  that still speaks in terms of "wardrive mode". It starts nothing. */
+function toggleWardriveMode(on) {
+  if (on) captureView = 'wardrive';
+  else if (captureView === 'wardrive') captureView = 'packets';
+  applyCaptureView();
 }
 
 // ── reset ──────────────────────────────────────────────────────────────────────
@@ -2611,6 +2645,8 @@ function resetAll() {
   // Wipe in-memory state
   state.deviceInfo = null;
   state.stage = 'capture';
+  captureView = 'packets';
+  analysisView = 'observations';
   capture.writer = null;
   capture.saved = null;
   capture.stats = null;
@@ -2635,7 +2671,7 @@ function resetAll() {
   manaResult = null;
 
   // Re-render everything
-  renderStages();
+  applyCaptureView();
   refreshPanels();
   log('ev', 'app reset');
 }
@@ -2653,13 +2689,38 @@ function resetAll() {
 // A page cannot exist without a tab (or it is unreachable) and a tab cannot point
 // at a page that is not there — that pairing is the list, not two lists.
 const PAGE_TABS = [
-  { id: 'home',    label: 'Home',    icon: 'home'     },
-  { id: 'capture', label: 'Capture', icon: 'capture'  },
-  { id: 'attacks', label: 'Attacks', icon: 'attack'   },
-  { id: 'crack',   label: 'Crack',   icon: 'key'      },
-  { id: 'logs',    label: 'Logs',    icon: 'terminal' },
+  { id: 'home',     label: 'Home',     icon: 'home'     },
+  { id: 'capture',  label: 'Capture',  icon: 'capture'  },
+  { id: 'analysis', label: 'Analysis', icon: 'analyze'  },
+  { id: 'attacks',  label: 'Attacks',  icon: 'attack'   },
+  { id: 'crack',    label: 'Crack',    icon: 'key'      },
 ];
 const PAGE_KEY = 'xixchil-page';
+
+/** Real pages that no tab points at, reached from the header instead: Logs and
+ *  Settings. They are exempt from the "every page has a tab" rule for that
+ *  reason, and nothing else is — the list is the exemption, so a third one is a
+ *  one-line change rather than three. */
+const HEADER_PAGES = ['logs', 'settings'];
+
+/** Capture's three views. Independent of each other: opening one only decides
+ *  what is on screen. Selecting a view must never start a capture, a sweep or a
+ *  wardrive — every start in this app is a button the operator presses. */
+const CAPTURE_VIEWS = [
+  { id: 'packets',  label: 'Packets',  icon: 'capture' },
+  { id: 'channels', label: 'Channels', icon: 'signal'  },
+  { id: 'wardrive', label: 'Wardrive', icon: 'scan'    },
+];
+let captureView = 'packets';
+
+/** Analysis' two views over one subject. They keep their own modules and their
+ *  own data: Observations is analyze.js (what is on the air), Assessment is
+ *  analysis.js (what to do about it). Only the labels are new. */
+const ANALYSIS_VIEWS = [
+  { id: 'observations', label: 'Observations', icon: 'analyze'  },
+  { id: 'assessment',   label: 'Assessment',   icon: 'analysis' },
+];
+let analysisView = 'observations';
 
 /** The tunnel the bridge is reached over, when it is not on the local network.
  *  Named here so the launcher call and the manifest's <queries> entry cannot drift. */
@@ -2668,24 +2729,33 @@ const TAILSCALE_PKG = 'com.tailscale.ipn';
 /** The last section you were on, ignoring Settings — so the gear can put you back. */
 let lastSection = 'home';
 
-/** Show one page and repaint what it owns. `settings` is reached by the gear. */
+/** Show one page and repaint what it owns.
+ *
+ *  `logs` and `settings` are reached from the header rather than the bar. They are
+ *  still pages, so they go through here — and because no tab is "the page you are
+ *  on" while one of them is open, the tab you came from stays lit (`.origin`) and
+ *  both header buttons toggle back to it. */
 function setPage(id) {
-  if (!PAGE_TABS.some((t) => t.id === id) && id !== 'settings') id = 'home';
-  if (id !== 'settings') lastSection = id;
+  if (!PAGE_TABS.some((t) => t.id === id) && !HEADER_PAGES.includes(id)) id = 'home';
+  if (!HEADER_PAGES.includes(id)) lastSection = id;
   try { localStorage.setItem(PAGE_KEY, id); } catch (e) {}
   document.querySelectorAll('.page').forEach((p) => p.classList.toggle('active', p.id === 'page-' + id));
+  const cameFrom = HEADER_PAGES.includes(id) ? lastSection : null;
   document.querySelectorAll('#tabbar .tab').forEach((t) => {
     const on = t.dataset.page === id;
     t.classList.toggle('active', on);
     t.setAttribute('aria-selected', String(on));
+    t.classList.toggle('origin', !on && t.dataset.page === cameFrom);
   });
   $('#gearBtn')?.classList.toggle('on', id === 'settings');
+  $('#logsBtn')?.classList.toggle('on', id === 'logs');
   renderPage(id);
 }
 
 function renderPage(id) {
   if (id === 'home')           renderHub();
-  else if (id === 'capture') { renderStages(); renderStagePanel(); renderAnalyzerCard(); }
+  else if (id === 'capture') { applyCaptureView(); renderAnalyzerCard(); }
+  else if (id === 'analysis')  applyAnalysisView();
   else if (id === 'attacks')   renderAttackPanel($('#attackPanel'), { exclude: 'crack' });
   else if (id === 'crack')     renderCrackPanel();
   else if (id === 'settings')  renderSettingsPanel();
@@ -2702,6 +2772,7 @@ function refreshPanels() {
   try {
     renderHub();
     renderStagePanel();
+    renderAnalysisHost();
     renderAnalyzerCard();
     renderAttackPanel($('#attackPanel'), { exclude: 'crack' });
     renderCrackPanel();
@@ -2734,15 +2805,24 @@ function renderHub() {
   const wardriving = !!wardriveActive();
   const hs = handshakeResult?.handshakes?.length || 0;
   const logLines = logEl()?.childElementCount || 0;
+  // A target only carries a rank if it was attackable and scored, so counting
+  // ranks is the honest number here — `targets.length` includes the context rows.
+  const ranked = (analysisPlan?.targets || []).filter((t) => t.rank).length;
+  const analysisLine = analysisPlan ? `${ranked} target(s) ranked`
+    : analyzeResult ? 'observations ready' : 'nothing read yet';
 
   // Every row is a whole button, and every row lands on its page. `scroll` names the
   // thing on that page the row is talking about, so "Dongle — not connected" opens
-  // Attacks at the dongle rather than at the top.
+  // Attacks at the dongle rather than at the top. `view` names the view when the
+  // thing lives inside one — the wardrive card only exists in Capture's Wardrive
+  // view, so a row that jumped to the page without the view would land on nothing.
   const rows = [
     { page: 'capture', icon: 'capture',  name: 'Capture',  sub: capLine,
       on: !!capture?.running },
+    { page: 'analysis', icon: 'analyze', name: 'Analysis', sub: analysisLine,
+      on: !!analysisPlan },
     { page: 'capture', icon: 'scan',     name: 'Wardrive', sub: wardriving ? 'running' : 'idle',
-      on: wardriving, scroll: 'wardriveCard' },
+      on: wardriving, view: 'wardrive', scroll: 'wardriveCard' },
     { page: 'attacks', icon: 'attack',   name: 'Attacks',  sub: `${ready} of ${all.length} ready`,
       on: ready > 0 },
     { page: 'attacks', icon: 'plug',     name: 'Dongle',   sub: dongleLine,
@@ -2753,7 +2833,7 @@ function renderHub() {
       on: false },
   ];
   list.innerHTML = rows.map((r) => `
-    <button class="srow${r.on ? ' on' : ''}" data-page="${r.page}"${r.scroll ? ` data-scroll="${r.scroll}"` : ''}>
+    <button class="srow${r.on ? ' on' : ''}" data-page="${r.page}"${r.view ? ` data-capture-view="${r.view}"` : ''}${r.scroll ? ` data-scroll="${r.scroll}"` : ''}>
       <span class="sicon">${Icon(r.icon, { size: 17 })}</span>
       <span class="sname">${escapeHtml(r.name)}</span>
       <span class="ssub">${escapeHtml(r.sub)}</span>
@@ -2996,6 +3076,9 @@ function boot() {
   // Labels live here like every other button: index.html ships them empty and
   // verify_ui.mjs fails on a blank one.
   $('#gearBtn').innerHTML      = Icon('gear', { size: 12 });
+  // Logs moved off the bar and into the header, next to the gear. Empty like the
+  // rest of index.html's buttons, so it is labelled here and verify_ui.mjs checks it.
+  $('#logsBtn').innerHTML      = Icon('terminal', { size: 12 });
   $('#dongleScan').innerHTML     = Icon('refresh', { size: 18 }) + 'Find dongle';
   $('#dongleQuickScan').innerHTML = Icon('scan', { size: 18 }) + 'Scan what it hears';
   $('#dongleSend').innerHTML     = Icon('chevron', { size: 18 }) + 'Send';
@@ -3153,10 +3236,11 @@ function boot() {
     });
   }
 
-  renderStages();
   refreshPanels();
   setConnected(false);
-  toggleWardriveMode(false);
+  // After setConnected, not before: the Capture view rule reads the console card's
+  // state as "is the board connected", so it has to run once that is settled.
+  applyCaptureView();
   log('ev', 'ready');
 
   const hasPlugin = !!window.Capacitor?.Plugins?.UsbSerial;
@@ -3206,16 +3290,31 @@ function boot() {
     if (jump && !jump.disabled) {
       e.preventDefault();
       setPage(jump.dataset.page);
+      // A row that names a view inside that page opens the view too — landing on
+      // Capture's Wardrive row without switching to the Wardrive view would show
+      // the packets card and hide the thing the row pointed at.
+      if (jump.dataset.captureView) setCaptureView(jump.dataset.captureView);
       // A tile may name the thing on that page it is talking about, so tapping
       // "Dongle — not connected" lands on the dongle, not at the top of Attacks.
       const land = jump.dataset.scroll;
       if (land) setTimeout(() => document.getElementById(land)?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 60);
+      return;
     }
+    // View switchers. They only change what is on screen — see the views section:
+    // no view opens a capture, a sweep or a wardrive.
+    const cap = e.target.closest('[data-capture-view]');
+    if (cap) { setCaptureView(cap.dataset.captureView); return; }
+    const an = e.target.closest('[data-analysis-view]');
+    if (an) setAnalysisView(an.dataset.analysisView);
   });
   // The gear is a toggle, not a one-way door: tapping it off Settings returns you to
-  // the section you were reading rather than dumping you back on Home.
+  // the section you were reading rather than dumping you back on Home. Logs, which
+  // is not on the bar either, behaves the same way.
   $('#gearBtn')?.addEventListener('click', () => {
     setPage($('#page-settings')?.classList.contains('active') ? lastSection : 'settings');
+  });
+  $('#logsBtn')?.addEventListener('click', () => {
+    setPage($('#page-logs')?.classList.contains('active') ? lastSection : 'logs');
   });
 
   let start = 'home';
