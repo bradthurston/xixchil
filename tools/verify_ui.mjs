@@ -178,11 +178,11 @@ ok(/state === 'blocked' \? 'not ready' : state/.test(js),
 
 // ── the dongle card links by itself ──────────────────────────────────────────
 //
-// Brad tapped "Scan what it hears" three times and got nothing, because the button
+// "Scan what it hears" tapped three times with nothing to show, because the button
 // refused unless the card already said `linked`, and the only place it said why was
-// a log line under the fold. The link actually happened when *I* tapped the dongle
-// row over CDP, which is a step he had no way to know about. A control cannot
-// require a step that only exists in the log.
+// a log line under the fold. The link actually happened when the dongle row was tapped
+// — a step nothing on screen asked for, so nothing on screen could lead to it.
+// A control cannot require a step that only exists in the log.
 
 ok(!/tap Find dongle, then tap the dongle row/.test(js),
    'the dead-end "tap Find dongle, then tap the dongle row" hint is gone');

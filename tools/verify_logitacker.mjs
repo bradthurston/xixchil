@@ -3,7 +3,7 @@
 //
 // The fixture is BYTES CAPTURED OFF THE LIVE DONGLE (LOGITacker v0.2.3-beta on a
 // PCA10059), replayed verbatim apart from the device address, which is replaced
-// with AA:BB:CC:DD:07 because it is Brad's own equipment. Nothing here needs a
+// with AA:BB:CC:DD:07. Nothing here needs a
 // dongle attached, which is the point: the parser is the part that breaks
 // silently, and it can be wrong forever without a test.
 //

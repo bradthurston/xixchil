@@ -106,7 +106,7 @@ async function load(plugin) {
   return globalThis.window.GPS;
 }
 
-// 1. The bug Brad hit: Android's string return must not throw, and must track.
+// 1. The bug this guards: Android's string return must not throw, and must track.
 {
   const plugin = makePlugin({ shape: 'callback' });
   const GPS = await load(plugin);

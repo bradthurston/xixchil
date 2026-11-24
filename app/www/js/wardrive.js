@@ -709,7 +709,7 @@ import { bytesToBase64 } from './transport.js';
     return p;
   }
 
-  // Ordered: the folder Brad asked for first, then a known-good fallback, then
+  // Ordered: the folder the user expects first, then a known-good fallback, then
   // app-private storage so an export never vanishes entirely. Android 11+ blocks
   // arbitrary writes to shared storage, so EXTERNAL_STORAGE may be refused here —
   // that is what the next attempt is for, and the log line names where it landed.

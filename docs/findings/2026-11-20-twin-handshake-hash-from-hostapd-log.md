@@ -1,8 +1,8 @@
 # Twin handshake capture with one radio, and a WPA*02* hash from hostapd's log
 
-2026-11-20. Bench: AR9271 (`wlan0`) + Intel AC 3168 (`wlp5s0`), hostapd, hashcat
-6.2.6 on an RTX 3060. Target: Brad's own Vizio `7c:d3:0a:11:22:33` and the dead SSID
-`Retired-Net` (a retired pre-Calix AP of his).
+2026-11-20. Bench: AR9271 + Intel AC 3168, hostapd, hashcat 6.2.6 on an RTX 3060.
+Target: a smart TV on the network (`7c:d3:0a:11:22:33`) and the SSID of a retired AP,
+`Retired-Net`.
 
 ## Result
 
@@ -91,9 +91,9 @@ from SSID-only matching.
 
 ## Open
 
-- Whether the PSK recovered from the dead SSID is byte-identical to the current Calix
-  credential rests on Brad's statement, not on a capture. If it is, the crack opens the live
-  network.
+- Whether the PSK recovered from the retired SSID is byte-identical to the router's current
+  credential rests on the operator's recollection, not on a capture. If it is, the crack opens
+  the live network.
 - A full rules attack over rockyou+best64 is ~50 minutes; wider masks/rules are longer. Not run.
 - A hostapd log must come from a run with `-dd`; the default log level does not print the
   RX EAPOL hexdump.

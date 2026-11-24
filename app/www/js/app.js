@@ -218,8 +218,8 @@ function dongleLinked() {
  *
  * There used to be a second step here — tap the dongle row — that existed even when
  * the dongle was the only candidate on the bus. Nothing said so: the guard below
- * answered into a log line under the fold, which reads as a dead button. Brad hit
- * exactly that, three taps in a row.
+ * answered into a log line under the fold, which reads as a dead button — exactly what
+ * three taps in a row on that screen produced.
  *
  * `autoLink:false` is for the refresh inside onPickDongle, which would otherwise
  * call itself.
@@ -3019,8 +3019,8 @@ function boot() {
     if (c) { e.preventDefault(); dongleRun(c); }
   });
   // ── command picker ──────────────────────────────────────────────────────────
-  // Brad does not know LOGITacker's command language and the shell has no `help`
-  // to teach it, so the vocabulary lives in a dropdown. Picking one fills the box
+  // LOGITacker's command language is not something anyone carries in their head, and the
+  // shell has no `help` to teach it, so the vocabulary lives in a dropdown. Picking one fills the box
   // below, which stays editable: the entries carry <placeholders> that have to be
   // replaced before sending, and nothing here invents a command that isn't in the
   // firmware's own documentation.

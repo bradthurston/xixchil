@@ -133,8 +133,7 @@ with our own MAC as the destination, and M1's key data parses for a PMKID KDE
 
 ## Bench result — Phase 0, run 2026-11-20
 
-Target: the bench AP in range (the router on base MAC ``), 2.4 GHz
-radio, ch 6, BSSID `9c:8b:76:80:32:97`, WPA2-PSK. Board: ESP32-S3-DevKitC-1-N16R8V,
+Target: the bench AP in range, 2.4 GHz radio, ch 6, BSSID `9c:8b:76:80:32:97`, WPA2-PSK. Board: ESP32-S3-DevKitC-1-N16R8V,
 firmware `0.4.0-lure` + the probe. Runner: `tools/pmkid_bench.py <ssid> <bssid> <ch> 15`.
 
 - **Q1 — PASS.** The STA stack associated to the WPA2 AP on a dummy PSK. The

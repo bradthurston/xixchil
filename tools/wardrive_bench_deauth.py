@@ -122,6 +122,8 @@ def main():
     args.remove("--yes")
     port_path = args[0] if len(args) > 0 else "/dev/ttyACM0"
     out = args[1] if len(args) > 1 else "/tmp/wardrive-deauth"
+    # Placeholder targets. Pass the real ones on the command line: this fires a deauth
+    # at a specific station, and only your own gear on your own channel is a target.
     bssid = args[2] if len(args) > 2 else "9c:8b:76:80:32:97"
     clients = args[3].split(",") if len(args) > 3 else ["de:ad:be:ef:00:03"]
     pre_s = float(args[4]) if len(args) > 4 else 6.0

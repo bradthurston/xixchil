@@ -1,4 +1,4 @@
-# PMKID gate-2 cross-check — Calix Lab-AP_5g (2026-11-20)
+# PMKID gate-2 cross-check — a Calix ONT in router mode (2026-11-20)
 
 **Question:** if a station associates to the target AP with an RSN IE that
 advertises PMKID caching (PMKID Count = 1), does the AP's EAPOL message 1 come
@@ -7,8 +7,8 @@ classic PMKID attack.
 
 **Answer: NO. Gate 2 fails on this AP.**
 
-Target: `Lab-AP_5g`, BSSID `9C:8B:76:80:32:97` (Calix Inc.), ch 6, WPA2-PSK.
-Radio: Atheros AR9271 (`0cf3:9271`, ath9k_htc), netdev `wlan0`.
+Target: `Lab-AP_5g`, BSSID `9C:8B:76:80:32:97`, ch 6, WPA2-PSK.
+Radio: Atheros AR9271 (`0cf3:9271`, ath9k_htc). `wlan0` below is whatever udev named it.
 
 ## Evidence
 

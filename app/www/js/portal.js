@@ -458,7 +458,7 @@ export function portalArm({
 
 // ── seeding the twin from what is in the air ────────────────────────────────
 //
-// Brad's call: the twin is seeded from a scan rather than typed in by hand. The
+// The twin is seeded from a scan rather than typed in by hand. The
 // scan is /scan's `aps[]`: { ssid, bssid, rssi, ch, auth }, where `auth` is the
 // Arduino WiFi.encryptionType enum (firmware/src/main.cpp).
 //
@@ -824,7 +824,7 @@ function escHtml(s) {
 
 // ── the sequencing: portal up FIRST, deauth second ─────────────────────────
 //
-// Brad's call, and the reason is not quietness — it is a race. A client that has
+// The order is not about quietness — it is a race. A client that has
 // just been knocked off rescans for a network it knows. Deauth-first means that
 // rescan happens while our twin is still coming up, so the client finds the REAL
 // AP again and re-joins it: the deauth is spent and the twin never gets a look.

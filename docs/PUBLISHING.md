@@ -33,17 +33,53 @@ are enforced **before** the switch is flipped, not after.
 
 ## The mechanical check before flipping public
 
-    # every MAC in tracked files — each hit must be a synthetic placeholder
-    git grep -nIiE '([0-9a-f]{2}:){5}[0-9a-f]{2}'
+    # every MAC in tracked files — each hit must be a synthetic placeholder.
+    # Escape the braces; an unescaped {2} matches a literal brace in some greps, and the
+    # wrong pattern returning nothing looks exactly like a clean tree.
+    git grep -nIiE '([0-9a-f][0-9a-f]:){5}[0-9a-f][0-9a-f]'
+
+    # the same addresses in the forms that carry no colons. A Linux netdev name IS the
+    # adapter's MAC — `wlx` followed by the 12 hex digits of the MAC, which the colon
+    # pattern above cannot see (that is exactly how it survived the first sweep).
+    git grep -nIoE 'wlx[0-9a-f]{12}' | sort -u
+    git grep -nIiE '([0-9a-f][0-9a-f]:){4,5}[0-9a-fx][0-9a-fx]'
+
+    # SSIDs: cross-check the repo against the list of names that are actually on the air,
+    # rather than trying to guess an SSID out of prose. Retired ones count too — a dead
+    # network name still ties the repo to the site.
+    for s in <every SSID, live and retired>; do git grep -lIi --fixed-strings "$s"; done
 
     # the author's name — expect LICENSE (and the Android package id, a deliberate choice)
     git grep -nI 'Brad'
 
-    # conversation attributions — expect nothing
-    git grep -nIiE "Brad's (call|flow|words|framing)|verbatim:|as he said"
+    # conversation attributions — expect nothing. Widen it past the possessive: "the bug
+    # <name> hit", "the folder <name> asked for", "<name> does not know X" and a bare
+    # first-person "I tapped ..." are the same tell as "X's call".
+    git grep -nIiE "Brad's (call|flow|words|framing)|verbatim:|as he said|\bBrad (hit|tapped|asked)|\bI (tapped|saw|ran|found)"
 
     # a real capture must never be tracked
     git ls-files | grep -iE '\.(pcap|pcapng|22000)$'
+
+### A clean first pass is not a clean repo — re-run the whole thing every time
+
+The 2026-11-19 purge was thorough and this repo was still dirty on 2026-11-24, before it went
+public. Six values were rewritten then; a later sweep found **eleven more substitutions across
+seven files**, every one of them committed *after* the purge, in the notes written while the work
+was being done:
+
+- the adapter's MAC in the form `wlx<12 hex chars>` — five files. The colon pattern is blind to it.
+- the live SSID of a retired AP, twice in one finding.
+- a fragment of a router's base MAC written with a placeholder tail (`<prefix>:xx`).
+- a **five-octet** address — LOGITacker prints a peripheral's RF address as five octets
+  (`<four octets>:<DestinationID>`), so a pattern demanding six never sees the address of a
+  device that was in the air in the room.
+- a cognitive migration of the attributions: the purge removed "X's call" and the writing drifted
+  straight back into "the bug X hit", "the folder X asked for", "X does not know Y".
+
+**The rule that follows: the sweep is a pre-flip ritual, not a one-time cleanup.** Anything written
+in the week after a purge is unpublished, unreviewed and written casually — it is exactly where the
+real values go back in.
+
 
 ## History, not just the working tree
 
