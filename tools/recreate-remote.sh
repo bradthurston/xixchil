@@ -95,7 +95,10 @@ done < <(awk -F'==>' '{print $1}' "$MAP")
 echo "   TOTAL HITS: ${tot}  $([ "$tot" -eq 0 ] && echo '<-- clean' || echo '<-- STILL LEAKING')"
 echo
 echo "== 6. old SHAs must no longer resolve =="
-for old in 17879cb1b17904cfd7d8f2f4f0eb5b6c4d21d5f3 a1129f1c35e6b4bdfa71655a3b25445ea92771f3; do
+# The two SHAs the 2026-11-24 purge had to bury: the tip that still carried real values in
+# history, and the restore-point tag that sits under it. Both must 404/422 — a repository that
+# never held the objects cannot serve them.
+for old in 2da1068ae95927cfa45ee22ee09607b4eda2108e 783f7a3ec381fdd11bcaba22dee80fc382af03f1; do
   printf '   %s -> HTTP %s\n' "${old:0:12}" \
     "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${TOK}" "https://api.github.com/repos/${REPO}/commits/${old}")"
 done

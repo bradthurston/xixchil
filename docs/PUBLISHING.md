@@ -95,6 +95,25 @@ pair of on-air addresses from a capture). Six substitutions were applied across 
                                                  # e.g. <device-mac> -> aa:bb:cc:dd:ee:ff
     git filter-repo --replace-message <file>     # AND the same file again, for commit messages
 
+### Second purge, 2026-11-24 — the same ritual, five days later
+
+The tree was dirty again (see the widened sweep above), all of it committed after the first purge,
+so flipping public needed a second rewrite. Same sequence — delete, recreate, push the cleaned
+history — with an 18-entry map that carries both generations of values, applied to text *and*
+messages:
+
+    git filter-repo --force --replace-text   ~/backups/xixchil-replacements.txt
+    git filter-repo --force --replace-message ~/backups/xixchil-replacements.txt
+
+**A second run needs `.git/filter-repo/already_ran` cleared, or it does nothing and says so
+quietly.** Left in place, filter-repo opens an interactive prompt ("Treat this run as a continuation
+of filtering in the previous run (Y/N)?") and, with no tty, dies of `EOFError` — while the shell
+reports exit 0 for the pipeline. The rewrite appears to have run and the history is untouched.
+Check `git rev-parse HEAD` before and after; if the SHA did not move, nothing happened.
+
+The evidence that this pass was inert is the tree hash: **`HEAD^{tree}` is `e746a65e…` before and
+after**, so only the past moved and the published content is byte-for-byte what was reviewed.
+
 ### Four traps, every one of which bit during the real purge
 
 1. **`--replace-text` does not touch commit messages.** Messages are a separate stream. A board MAC
