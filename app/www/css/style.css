@@ -1,43 +1,57 @@
-/* style.css — functional shell for the spike.
-   Dark, mobile-first, no emoji. This is NOT the final visual design: the real
-   look-and-feel pass is still to come. */
-:root {
-  /* ── the inks ─────────────────────────────────────────────────────────
-     Every value below is a named traditional Japanese pigment (伝統色)
-     except lines marked "tint" — those are the pigment diluted on paper
-     or in water, because a screen has no wash. The painting on the repo
-     page is the reference: warm paper, warm-black ink, and the two
-     colours that carry old brushwork, 朱 vermilion and 常磐 evergreen.
+/* style.css — Hybrid v2 visual foundation.
 
-     Default is the sumi ground — ink on dark, for a phone in a car at
-     night. The paper theme is the same pigments on the painting's own
-     unbleached ground.                                              */
+   The palette is the prototype's, character for character: two grounds, seven
+   tokens each (--bg, --panel, --fg, --muted, --line, --accent, --green). Those
+   seven ARE the design. Everything else on this sheet is either one of them or
+   a value derived from one and labelled "tint" — a pigment diluted on paper or
+   in water, because a screen has no wash. Nothing else has been invented.
+
+   The names further down (--surface, --text, --ok …) are aliases onto those
+   seven. They are kept because every rule — and a good deal of app.js — already
+   speaks them, so changing the palette is a change to this block rather than to
+   seven hundred lines of components. */
+:root {
 
   --sumi:        #281A14;   /* 鉄黒 tetsuguro — the brown-black ink stone yields */
   --paper:       #F4ECD8;   /* 生成り kinari — the painting's ground, sampled */
 
-  --bg:          #100E0A;   /* sumi ground, tint */
-  --surface:     #2A2520;   /* tint */
-  --surface-2:   #332D27;   /* tint */
-  --line:        #4E4636;   /* tint */
-  --line-2:      #605846;   /* tint */
-  --header-top:  #191510;   /* tint */
-
-  --text:        #EDE4CD;   /* 練色 neriiro */
-  --text-2:      #C8BFA6;   /* tint */
-  --text-strong: #F8F4E6;   /* 象牙色 zōgeiro */
-  --muted:       #9A947E;   /* 利休鼠 rikyūnezu */
-  --dim:         #6A6553;   /* tint */
-
+  /* ── Ink: the ground the phone is used on after dark ───────────────────
+     These seven are the prototype's, verbatim. */
+  --bg:          #100E0A;
+  --panel:       #2A2520;
+  --fg:          #EDE4CD;
+  --muted:       #AAA08C;
+  --line:        #51483A;
   --accent:      #EB6101;   /* 朱色 shuiro — vermilion, the seal */
+  --green:       #68BE8D;   /* 若竹色 wakatakeiro — young bamboo */
+
+  /* aliases — the names the rest of this sheet already speaks */
+  --surface:     var(--panel);
+  --surface-2:   #332D27;   /* tint — panel lifted 6% toward the ink */
+  --line-2:      #605846;   /* tint */
+  --header-top:  var(--bg); /* flat, as the prototype has it: no gradient */
+
+  --text:        var(--fg);
+  --text-2:      #C8BFA6;   /* tint */
+  --text-strong: #F8F4E6;   /* 象牙色 zōgeiro — the prototype's own paper */
+  --dim:         #6A6553;   /* tint */
+  /* On the ink ground the palette's own muted and green already clear AA
+     (7.45:1 and 8.57:1), so on-ground copy just uses them. Paper cannot. */
+  --muted-on-bg: var(--muted);
+  --ok-on-bg:    var(--green);
+
   --accent-hi:   #F59473;   /* 洗朱 araishu */
   --accent-mid:  #A8452A;   /* tint */
   --accent-line: #B4501F;   /* tint */
   --accent-dk:   #8F2E14;   /* 弁柄色 bengara — red iron oxide */
   --accent-bg:   #2A1710;   /* tint */
-  --accent-fg:   #FBEFE4;   /* tint */
+  --accent-fg:   #FBEFE4;   /* tint — type ON a tinted accent panel */
+  /* Type on a FILLED accent control. The prototype hard-codes white here, which
+     on this ground is 3.36:1 — under AA. The ink ground itself is 5.73:1, and
+     vermilion under black is the older, more correct reading of the seal. */
+  --on-accent:   #100E0A;
 
-  --ok:          #68BE8D;   /* 若竹色 wakatakeiro — young bamboo */
+  --ok:          var(--green);
   --ok-fg:       #B6F0CD;   /* tint */
   --ok-line:     #2C5A3C;   /* tint */
   --ok-bg:       #12231A;   /* tint */
@@ -59,34 +73,50 @@
   --log-bg:      #0C0A07;   /* tint */
   --log-fg:      #A79C86;   /* tint */
 
-  --radius:      14px;
+  /* ── one radius for panels, one for controls, one touch floor ─────────
+     The prototype's numbers: panels 12px, controls 8px, nothing under 44px. */
+  --radius:      12px;
+  --radius-ctl:  8px;
+  --touch:       44px;
   --pad:         16px;
+  --gap:         12px;
 }
 
-/* Same pigments, painted on the painting's own ground. */
+/* ── Paper: the same seven tokens, painted on the painting's own ground ───── */
 :root[data-theme="paper"] {
-  --bg:          #DED2B2;   /* tint */
-  --surface:     #F8F4E6;   /* 象牙色 zōgeiro */
-  --surface-2:   #F1E9D6;   /* 練色 neriiro */
-  --line:        #C6B894;   /* tint */
-  --line-2:      #B3A47C;   /* tint */
-  --header-top:  #F8F4E6;   /* 象牙色 */
+  --bg:          #DED2B2;
+  --panel:       #F8F4E6;
+  --fg:          #281A14;
+  --muted:       #746650;
+  --line:        #BFB092;
+  --accent:      #8F2E14;   /* 弁柄色 bengara */
+  --green:       #007B43;   /* 常磐色 tokiwairo — evergreen */
 
-  --text:        #281A14;   /* 鉄黒 tetsuguro */
+  --surface:     var(--panel);
+  --surface-2:   #F1E9D6;   /* tint */
+  --line-2:      #B3A47C;   /* tint */
+  --header-top:  var(--bg);
+
+  --text:        var(--fg);
   --text-2:      #4A3B2E;   /* tint */
   --text-strong: #14100C;   /* tint */
-  --muted:       #615540;   /* tint */
   --dim:         #857A60;   /* tint */
+  /* Not the palette's muted: #746650 is 3.72:1 on this ground and the palette's
+     evergreen is 3.57:1, both under AA for normal text. These two are the same
+     pigments darkened until on-ground copy clears it (4.81:1 and 4.61:1).
+     Inside a panel the palette's own values are used and both clear AA. */
+  --muted-on-bg: #63553F;
+  --ok-on-bg:    #006833;
 
-  --accent:      #8F2E14;   /* 弁柄色 bengara */
   --accent-hi:   #B4501F;   /* 洗朱 */
   --accent-mid:  #C9764F;   /* tint */
   --accent-line: #B4501F;   /* tint */
   --accent-dk:   #6E2410;   /* tint */
   --accent-bg:   #F5E3D6;   /* tint */
   --accent-fg:   #FBF2E6;   /* tint */
+  --on-accent:   #FFFFFF;   /* the prototype's own choice, and 8.17:1 here */
 
-  --ok:          #007B43;   /* 常磐色 tokiwairo — evergreen */
+  --ok:          var(--green);
   --ok-fg:       #1E5C3A;   /* tint */
   --ok-line:     #7FA88F;   /* tint */
   --ok-bg:       #E2EDE2;   /* tint */
@@ -116,27 +146,53 @@ html, body {
   margin: 0;
   height: 100%;
   background: var(--bg);
-  color: var(--text);
-  font: 15px/1.5 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+  color: var(--fg);
+  /* 15px system, as the prototype sets it. Every size below is relative to this. */
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   overscroll-behavior: none;
+  -webkit-font-smoothing: antialiased;
 }
 
 #app { display: flex; flex-direction: column; height: 100%; }
 
 /* ── header ─────────────────────────────────────────────── */
+/* ── the header ───────────────────────────────────────────────────────────────
+   Compact, as the prototype has it: 24px Georgia wordmark, status to the right,
+   two 44px targets. Flat ground — the gradient it used to wear was decoration
+   and the prototype has none. Top inset only, so the header sits under the
+   notch rather than behind it. */
 header {
-  display: flex; align-items: center; gap: 10px;
-  padding: calc(env(safe-area-inset-top, 0px) + 14px) var(--pad) 14px;
+  display: flex; align-items: center; gap: 8px;
+  padding: calc(env(safe-area-inset-top, 0px) + 10px) 12px 10px;
   border-bottom: 1px solid var(--line);
-  background: linear-gradient(180deg, var(--header-top), var(--bg));
+  background: var(--bg);
 }
 /* The seal, at rest: the mark is the one place vermilion sits when nothing
    is happening. Everything else earns its colour by meaning something. */
-header > svg { color: var(--accent); flex: none; }
+header > svg { color: var(--accent); flex: none; width: 20px; height: 20px; }
 header h1.brand { margin: 0; flex: 1 1 auto; min-width: 0; display: flex; align-items: center; }
-/* vector wordmark: cap height 14px, so it reads at header scale without
-   the hairline dropout that a lighter Mincho weight suffers on dark. */
-header .wordmark { height: 16.75px; width: auto; max-width: 100%; flex: none; fill: var(--text); }
+/* The wordmark is type again, as the prototype has it: 24px Georgia. What it
+   replaces was 7 glyphs of IPA Mincho shipped as vector paths because the face
+   is 7.7 MB; Georgia is a serif the phone already has. The fallback chain keeps
+   it a serif even where Georgia is absent (Android's Noto Serif). */
+header .wordmark {
+  font: bold 24px Georgia, "Noto Serif", "Times New Roman", serif;
+  letter-spacing: 1px; color: var(--fg); white-space: nowrap;
+}
+/* The hanko. It used to live inside the wordmark's SVG, after the last glyph;
+   it is drawn geometry rather than font data, so it survives the outlines being
+   replaced by type — and it is the part that made the mark read as designed
+   rather than as styled text. Rotated so it reads as stamped, and carved in the
+   ground colour so it reads as cut. Always tokens, never a hex. */
+header .seal { flex: none; width: 16px; height: 16px; margin-left: 7px; }
+/* Logs and Settings. Icon-only, but never smaller than a thumb, and they keep
+   the flat ground: they are ways out of the page, not actions in it. */
+#logsBtn, #gearBtn, .iconbtn {
+  min-width: var(--touch); min-height: var(--touch); padding: 0 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid transparent; color: var(--muted-on-bg);
+}
+#logsBtn .icon, #gearBtn .icon, .iconbtn .icon { width: 20px; height: 20px; }
 /* Ink or paper. Now in Settings (it is a display preference, not something to
    press mid-capture). Names the theme it switches TO, so it says what it does
    instead of showing a glyph you have to decode. */
@@ -144,16 +200,23 @@ header .wordmark { height: 16.75px; width: auto; max-width: 100%; flex: none; fi
 #themeBtn:hover, #themeBtn:focus-visible { color: var(--accent); border-color: var(--accent-line); }
 #themeBtn #themeName { font-size: 11px; letter-spacing: .3px; }
 
+/* ── the connection status ────────────────────────────────────────────────────
+   The prototype's grammar: a filled dot when it is up, a ring when it is not,
+   11px, and no chrome around it — a chip would read as a button, and this is the
+   one thing in the header you cannot press. */
 .pill {
   display: inline-flex; align-items: center; gap: 6px;
-  font-size: 12px; font-weight: 600;
-  padding: 5px 10px; border-radius: 999px;
-  background: var(--surface-2); color: var(--muted);
-  border: 1px solid var(--line);
+  font-size: 11px; font-weight: 600; letter-spacing: .3px;
+  padding: 4px 2px; background: none; border: 0;
+  color: var(--muted-on-bg); white-space: nowrap;
 }
-.pill.on  { color: var(--ok);   border-color: var(--ok-line); background: var(--ok-bg); }
-.pill.err { color: var(--err);  border-color: var(--err-line); background: var(--err-bg); }
-.pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pill.on  { color: var(--ok-on-bg); }
+.pill.err { color: var(--err); }
+.pill .dot {
+  width: 8px; height: 8px; border-radius: 50%; flex: none;
+  border: 1.5px solid currentColor; background: none;        /* ○ offline */
+}
+.pill.on .dot { background: currentColor; border-color: currentColor; }  /* ● linked */
 
 /* ── main ───────────────────────────────────────────────── */
 main { flex: 1; overflow-y: auto; padding: var(--pad); padding-bottom: var(--pad); }
@@ -171,28 +234,38 @@ main { flex: 1; overflow-y: auto; padding: var(--pad); padding-bottom: var(--pad
 }
 
 .card {
-  background: var(--surface);
+  background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: var(--pad);
-  margin-bottom: 12px;
+  margin: 0 0 var(--gap);
 }
 .card h2 {
-  font-size: 13px; text-transform: uppercase; letter-spacing: .8px;
-  color: var(--muted); margin: 0 0 12px; font-weight: 650;
+  font-size: 16px; font-weight: 600; letter-spacing: 0; text-transform: none;
+  color: var(--fg); margin: 0 0 12px;
 }
 
 /* ── buttons ────────────────────────────────────────────── */
+/* ── controls ─────────────────────────────────────────────────────────────────
+   8px corners, a 44px floor, the page's own 15px type: the prototype's control
+   spec, applied to every button, select and input rather than to a new class.
+   Pressed state is a brighter fill, not a scale transform — with a 44px floor a
+   shrink reads as a glitch rather than as feedback. */
 button {
-  font: inherit; font-weight: 600;
+  font: inherit;
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  padding: 12px 16px; border-radius: 11px; cursor: pointer;
-  border: 1px solid var(--line); background: var(--surface-2); color: var(--text);
-  transition: transform .06s ease, filter .12s ease;
+  min-height: var(--touch);
+  padding: 10px; border-radius: var(--radius-ctl); cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--fg);
+  transition: filter .12s ease;
 }
-button:active { transform: scale(.985); }
-button:disabled { opacity: .45; cursor: default; }
-button.primary { background: var(--accent-dk); border-color: var(--accent-line); color: var(--accent-fg); }
+button:active { filter: brightness(.94); }
+button:disabled { opacity: .4; cursor: default; }
+/* The seal, filled: the one control that carries the accent outright. */
+button.primary {
+  background: var(--accent); border-color: var(--accent); color: var(--on-accent);
+  font-weight: 600;
+}
 button.ghost   { background: transparent; }
 button.block   { width: 100%; }
 button.danger  { background: var(--danger-bg); border-color: var(--danger-line); color: var(--danger-fg); }
@@ -203,7 +276,7 @@ button.danger  { background: var(--danger-bg); border-color: var(--danger-line);
 /* ── device list ────────────────────────────────────────── */
 .device {
   display: flex; align-items: center; gap: 12px;
-  padding: 12px; border: 1px solid var(--line); border-radius: 11px;
+  padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-ctl);
   background: var(--surface-2); margin-bottom: 8px; cursor: pointer;
 }
 .device:active { filter: brightness(1.15); }
@@ -216,16 +289,18 @@ button.danger  { background: var(--danger-bg); border-color: var(--danger-line);
 /* Capture and Analysis each open one view at a time. This is not the step bar it
    replaced: a step numbered a position in one path, these pick what you are
    looking at, and opening one starts nothing. */
-.viewsw { display: flex; gap: 8px; }
+.viewsw { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.viewsw::-webkit-scrollbar { display: none; }
 .viewtab {
-  flex: 1 1 0; min-width: 0;
-  display: flex; align-items: center; justify-content: center; gap: 7px;
-  background: var(--surface-2); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 11px 8px; cursor: pointer;
-  font-size: 13px; font-weight: 650; color: var(--muted);
+  flex: 1 1 0; min-width: 0; min-height: var(--touch);
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius-ctl); padding: 10px 8px; cursor: pointer;
+  font-size: 13px; font-weight: 400; color: var(--fg); white-space: nowrap;
 }
 .viewtab .icon { color: inherit; flex: none; }
-.viewtab.active { border-color: var(--accent-mid); background: var(--accent-bg); color: var(--accent-hi); }
+.viewtab.active { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.viewtab:active { filter: brightness(.94); }
 
 /* ── key/value ──────────────────────────────────────────── */
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13px; }
@@ -235,7 +310,7 @@ button.danger  { background: var(--danger-bg); border-color: var(--danger-line);
 /* ── log ────────────────────────────────────────────────── */
 #log {
   font: 11.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
-  background: var(--log-bg); border: 1px solid var(--line-2); border-radius: 11px;
+  background: var(--log-bg); border: 1px solid var(--line-2); border-radius: var(--radius-ctl);
   padding: 10px; margin: 0; max-height: 240px; overflow-y: auto;
   white-space: pre-wrap; word-break: break-word; color: var(--log-fg);
 }
@@ -262,14 +337,15 @@ button.danger  { background: var(--danger-bg); border-color: var(--danger-line);
   color: var(--muted); font-weight: 650;
 }
 .field select, .field input, #dongleCard select, #dongleCard input {
-  font: inherit; font-weight: 600; color: var(--text);
-  background: var(--surface-2); border: 1px solid var(--line);
-  border-radius: 10px; padding: 10px 12px; width: 100%;
+  font: inherit; color: var(--fg);
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius-ctl); padding: 10px 12px; width: 100%;
+  min-height: var(--touch);
   -webkit-appearance: none; appearance: none;
 }
-.field input { font-weight: 500; font-size: 13px; }
-.field input::placeholder { color: var(--dim); font-weight: 400; }
-.field select:disabled, .field input:disabled, #dongleCard select:disabled, #dongleCard input:disabled { opacity: .45; }
+.field input { font-weight: 400; }
+.field input::placeholder { color: var(--dim); }
+.field select:disabled, .field input:disabled, #dongleCard select:disabled, #dongleCard input:disabled { opacity: .4; }
 /* The seal red, put to work: it marks where you are. */
 .field select:focus, .field input:focus, #dongleCard select:focus, #dongleCard input:focus {
   outline: none; border-color: var(--accent);
@@ -284,7 +360,7 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 
 .saved {
   display: flex; align-items: center; gap: 8px; margin-top: 12px;
-  padding: 10px 12px; border-radius: 10px;
+  padding: 10px 12px; border-radius: var(--radius-ctl);
   background: var(--ok-bg); border: 1px solid var(--ok-line); color: var(--ok);
   font-size: 12.5px; word-break: break-all;
 }
@@ -302,7 +378,7 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 .findings { display: flex; flex-direction: column; gap: 8px; }
 .finding {
   border: 1px solid var(--line); border-left-width: 3px;
-  border-radius: 10px; padding: 10px 12px; background: var(--surface-2);
+  border-radius: var(--radius-ctl); padding: 10px 12px; background: var(--surface-2);
 }
 .finding.high { border-left-color: var(--err);  background: var(--err-bg-2); }
 .finding.info { border-left-color: var(--accent); }
@@ -310,7 +386,7 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 .fdetail { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
 
 .secsum {
-  border: 1px solid var(--line); border-radius: 10px;
+  border: 1px solid var(--line); border-radius: var(--radius-ctl);
   padding: 12px; background: var(--surface-2);
 }
 .secsum .sechead:first-child { margin-top: 0; }
@@ -318,7 +394,7 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 .aplist, .clientlist, .pnllist { display: flex; flex-direction: column; gap: 6px; }
 .ap, .client {
   display: flex; align-items: center; gap: 10px;
-  border: 1px solid var(--line); border-radius: 10px;
+  border: 1px solid var(--line); border-radius: var(--radius-ctl);
   padding: 9px 11px; background: var(--surface-2);
 }
 .apicon { flex: none; display: flex; }
@@ -342,7 +418,7 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 .pnlnote { font-size: 12.5px; color: var(--muted); margin-bottom: 9px; }
 .pnlitem {
   border: 1px solid var(--warn-line); border-left: 3px solid var(--warn);
-  border-radius: 10px; padding: 9px 11px; background: var(--warn-bg);
+  border-radius: var(--radius-ctl); padding: 9px 11px; background: var(--warn-bg);
 }
 .pnlssid { font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
 .pnlmeta { font-size: 11.5px; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
@@ -357,7 +433,7 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 /* ── analysis (stage 3) ─────────────────────────────────── */
 .topnote {
   display: flex; align-items: center; gap: 8px; margin-top: 12px;
-  padding: 10px 12px; border-radius: 10px;
+  padding: 10px 12px; border-radius: var(--radius-ctl);
   background: var(--accent-bg); border: 1px solid var(--accent-mid); color: var(--accent-fg);
   font-size: 12.5px;
 }
@@ -368,7 +444,7 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 
 .target {
   border: 1px solid var(--line); border-left-width: 3px;
-  border-radius: 11px; padding: 11px 12px; background: var(--surface-2);
+  border-radius: var(--radius-ctl); padding: 11px 12px; background: var(--surface-2);
 }
 .target.high { border-left-color: var(--err);  background: var(--err-bg-2); }
 .target.med  { border-left-color: var(--warn); background: var(--warn-bg); }
@@ -414,7 +490,7 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 
 .taction {
   display: flex; align-items: center; gap: 7px; margin-top: 9px;
-  padding: 8px 11px; border-radius: 9px;
+  padding: 8px 11px; border-radius: var(--radius-ctl);
   font-size: 12.5px; font-weight: 650;
   background: var(--danger-bg); border: 1px solid var(--danger-line); color: var(--danger-fg);
 }
@@ -425,7 +501,7 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 
 .rogueitem {
   border: 1px solid var(--line); border-left-width: 3px;
-  border-radius: 10px; padding: 9px 11px; background: var(--surface-2);
+  border-radius: var(--radius-ctl); padding: 9px 11px; background: var(--surface-2);
 }
 .rogueitem.void  { border-left-color: var(--warn); background: var(--warn-bg); }
 .rogueitem.onair { border-left-color: var(--line); }
@@ -446,7 +522,7 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 
 #wardriveLog {
   font-size: 10.5px; line-height: 1.5;
-  background: var(--log-bg); border: 1px solid var(--line-2); border-radius: 11px;
+  background: var(--log-bg); border: 1px solid var(--line-2); border-radius: var(--radius-ctl);
   padding: 8px 10px; color: var(--accent-hi);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
@@ -459,7 +535,7 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 
 .atk {
   border: 1px solid var(--line); border-left-width: 3px;
-  border-radius: 11px; padding: 11px 12px; background: var(--surface-2);
+  border-radius: var(--radius-ctl); padding: 11px 12px; background: var(--surface-2);
 }
 .atk.ready   { border-left-color: var(--ok); }
 .atk.blocked { border-left-color: var(--line-2); }
@@ -508,7 +584,7 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 
 /* The crack box: extraction result, live search, or the recovered passphrase. */
 .crackbox {
-  margin-top: 9px; padding: 10px 11px; border-radius: 10px;
+  margin-top: 9px; padding: 10px 11px; border-radius: var(--radius-ctl);
   background: var(--surface); border: 1px solid var(--line);
 }
 .crackbox.win { border-color: var(--ok-line); background: var(--ok-bg); }
@@ -543,7 +619,7 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 .hslist { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; }
 .hsrow {
   display: flex; align-items: flex-start; gap: 9px;
-  padding: 8px 10px; border-radius: 9px;
+  padding: 8px 10px; border-radius: var(--radius-ctl);
   background: var(--surface-2); border: 1px solid var(--line);
 }
 .hstype {
@@ -563,7 +639,7 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 .anresult {
   margin: 8px 0 0;
   padding: 8px 10px;
-  border-radius: 10px;
+  border-radius: var(--radius-ctl);
   background: var(--surface);
   border: 1px solid var(--line);
 }
@@ -632,23 +708,26 @@ details[open] > summary::before { content: '▾'; }
 
 /* ── the bottom bar ──────────────────────────────────────────────────────────
    One tab per section, built in app.js from PAGE_TABS, so a section cannot
-   exist without a way to reach it and a tab cannot point at nothing.        */
+   exist without a way to reach it and a tab cannot point at nothing.
+   Compact, as the prototype has it: 21px icon over an 11px label, 8px of
+   padding, and the bottom inset added to it so the bar clears the gesture pill
+   instead of sitting under it. */
 .tabbar {
   flex: 0 0 auto;
   display: flex;
   border-top: 1px solid var(--line);
-  background: var(--surface);
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--panel);
+  padding: 8px 4px calc(8px + env(safe-area-inset-bottom, 0px));
 }
 .tabbar .tab {
-  flex: 1 1 0; min-width: 0;
-  display: flex; flex-direction: column; align-items: center; gap: 3px;
-  padding: 9px 2px 8px;
+  flex: 1 1 0; min-width: 0; min-height: var(--touch);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  padding: 6px 0;
   border: 0; border-radius: 0; background: transparent;
-  color: var(--muted); font-size: 10.5px; font-weight: 600;
+  color: var(--muted); font-size: 11px; font-weight: 400;
   letter-spacing: .02em; text-transform: none;
 }
-.tabbar .tab .icon { color: inherit; }
+.tabbar .tab .icon { color: inherit; width: 21px; height: 21px; }
 .tabbar .tab.active { color: var(--accent); }
 /* The tab you came from, while a header page (Logs or Settings) is open. Dimmer
    than .active, because it is where you were, not where you are. */
@@ -720,3 +799,40 @@ details.atk[open] .atkchev { transform: rotate(180deg); }
 .fields.aim { align-items: flex-start; }
 .fields.aim .field:first-child { flex: 1 1 auto; min-width: 0; }
 .fields.aim .field:last-child { flex: 0 0 auto; }
+
+/* ══ the visual foundation ═══════════════════════════════════════════════════
+   Phase 3A. Everything above is the prototype's palette, type, radii and rhythm
+   applied to the components the app already had — no structure was rearranged
+   to get it, and no new component vocabulary was introduced. This block holds
+   the parts that are about the DEVICE rather than about the design.
+
+   Safe areas. viewport-fit=cover is set in index.html, so env() is live:
+     · header  — top inset + 10px, so the wordmark clears the status bar;
+     · tabbar  — 8px + bottom inset, so the labels clear the gesture pill;
+     · main    — owns the scroll and needs no inset: the bar is in the flow, not
+                 fixed over the content, so nothing can end up behind it.
+
+   Colour is never the only signal. A view that is selected gains weight as well
+   as the accent border; the connection dot fills as well as changes hue; a
+   disabled control drops to 40% rather than only greying. That is deliberate,
+   and it is why these states are written out instead of inherited.
+   ═════════════════════════════════════════════════════════════════════════*/
+
+/* Narrow screens. The header is the one row that can run out of room: at 320px
+   the mark, a 24px wordmark, the status and two 44px targets come to about
+   316px. Below 360px the mark goes and the wordmark comes down 2px. The type
+   scale and the touch targets do NOT shrink — those are the two things that
+   must survive every width, so they are the two things this does not touch. */
+@media (max-width: 360px) {
+  header { gap: 6px; padding-left: 10px; padding-right: 10px; }
+  header > svg { display: none; }
+  header .wordmark { font-size: 22px; letter-spacing: .5px; }
+  main { padding: 12px; }
+  .viewtab { font-size: 12px; gap: 5px; }
+}
+
+/* Feedback is a fill and a brightness change, both of which the system setting
+   can ask to have left alone. */
+@media (prefers-reduced-motion: reduce) {
+  button, .viewtab, .pbar > span, .anfill { transition: none; }
+}

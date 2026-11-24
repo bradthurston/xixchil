@@ -439,6 +439,115 @@ const stagePanel = js.match(/function renderStagePanel\(\) \{([\s\S]*?)\n\}/)?.[
 ok(!/state\.stage === 'attack'/.test(stagePanel),
    'renderStagePanel has no unreachable attack branch (Attacks is its own page)');
 
+// ── Phase 3A: the visual foundation ──────────────────────────────────────────
+// The palette check is first and it is exact: those fourteen values ARE the
+// design, so a tint that drifts into one of them is the one failure this phase
+// cannot survive quietly. The two grounds are pulled out of the sheet and
+// compared value by value rather than merely being searched for, so a hex that
+// appears on the wrong ground fails too.
+const groundOf = (sel) => {
+  const esc = sel.replace(/[[\]"]/g, '\\$&');
+  const m = css.match(new RegExp(`${esc}\\s*\\{([\\s\\S]*?)\\n\\}`));
+  return m ? m[1] : '';
+};
+const ink = groundOf(':root');
+const paper = groundOf(':root[data-theme="paper"]');
+const PALETTE = {
+  '--bg':     ['#100E0A', '#DED2B2'],
+  '--panel':  ['#2A2520', '#F8F4E6'],
+  '--fg':     ['#EDE4CD', '#281A14'],
+  '--muted':  ['#AAA08C', '#746650'],
+  '--line':   ['#51483A', '#BFB092'],
+  '--accent': ['#EB6101', '#8F2E14'],
+  '--green':  ['#68BE8D', '#007B43'],
+};
+for (const [tok, [inkVal, paperVal]] of Object.entries(PALETTE)) {
+  const re = new RegExp(`${tok}\\s*:\\s*${inkVal}\\s*;`, 'i');
+  ok(re.test(ink), `Ink ${tok} is the prototype's ${inkVal}`);
+  const reP = new RegExp(`${tok}\\s*:\\s*${paperVal}\\s*;`, 'i');
+  ok(reP.test(paper), `Paper ${tok} is the prototype's ${paperVal}`);
+}
+// The aliases the rest of the sheet speaks have to point AT those seven, or the
+// palette would be correct in the tokens and wrong on the screen.
+ok(/--surface:\s*var\(--panel\)/.test(ink) && /--surface:\s*var\(--panel\)/.test(paper),
+   'the surface alias points at the palette panel, not at a second surface');
+ok(!/linear-gradient/.test(css.split('/* ══ the visual foundation')[0].split('header {')[1]?.split('}')[0] || ''),
+   'the header is a flat ground — the gradient it used to wear is decoration and the prototype has none');
+ok(!/linear-gradient\(180deg, var\(--header-top\)/.test(css), 'no decorative gradient survives in the header');
+
+// Radii and the touch floor, from the prototype: panels 12, controls 8, nothing
+// under 44px. The floor is on the shared control rule, so every button inherits
+// it rather than each one having to remember.
+ok(/--radius:\s*12px/.test(css) && /--radius-ctl:\s*8px/.test(css) && /--touch:\s*44px/.test(css),
+   'the three numbers of the foundation are declared as tokens (12px / 8px / 44px)');
+ok(/\.card\s*\{[\s\S]*?border-radius:\s*var\(--radius\)/.test(css),
+   'panels take the 12px radius');
+ok(/^button\s*\{[\s\S]*?min-height:\s*var\(--touch\)[\s\S]*?border-radius:\s*var\(--radius-ctl\)/m.test(css),
+   'buttons take the 8px control radius and the 44px floor together');
+ok(/\.field select[\s\S]*?min-height:\s*var\(--touch\)/.test(css),
+   'selects and inputs sit on the same floor as buttons');
+ok(!/transform:\s*scale\(\.985\)/.test(css) && !/transition:[^;]*transform/.test(css),
+   'pressing a control is a fill change, not a scale transform');
+ok(/button:disabled\s*\{\s*opacity:\s*\.4/.test(css),
+   'a disabled control is unmistakable (40%, as the prototype has it)');
+
+// Type. 15px system everywhere, one 24px serif wordmark, and the panel headings
+// back to sentence case at 16px instead of 13px uppercase.
+ok(/font:\s*15px\/1\.5 system-ui/.test(css), 'the global type is 15px system');
+ok(/\.wordmark\s*\{[\s\S]*?font:\s*bold 24px Georgia,\s*"Noto Serif"/.test(css),
+   'the wordmark is 24px Georgia, with a serif fallback chain');
+ok(/<span class="wordmark">Xixchil<\/span>/.test(html),
+   'the wordmark is type again, not seven glyphs of vector Mincho');
+// The seal is the part that made the mark read as designed, so it survives the
+// outlines being dropped — and it stays a token painting, never a hex.
+ok(/<svg class="seal"/.test(headerBlock) && /fill="var\(--accent\)"/.test(headerBlock) &&
+   /fill="var\(--bg\)"/.test(headerBlock),
+   'the seal is kept and still paints from the palette tokens');
+ok(/header \.seal\s*\{[^}]*width:\s*16px/.test(css), 'the seal has its own size in the header');
+// The 7.7 MB face is no longer bundled as paths; the licence obligation went
+// with the outlines, and the note that says so has to stay true.
+ok(/LICENSE-IPA/.test(html) || /IPA/.test(html) || !/IPAMincho/.test(html),
+   'the IPA-licensed outlines are gone from the shipped markup');
+ok(/\.card h2\s*\{[\s\S]*?font-size:\s*16px[\s\S]*?text-transform:\s*none/.test(css),
+   'panel headings are 16px sentence case, as the prototype has them');
+
+// The header: two 44px icon buttons, no inline styles, and the status as a dot
+// that fills when the bridge is up.
+ok(!/style=/.test(headerBlock), 'the header carries no inline styles');
+ok(/#logsBtn, #gearBtn[\s\S]*?min-width:\s*var\(--touch\)/.test(css),
+   'the two header buttons are thumb-sized targets');
+ok(/\.pill\.on\s*\{\s*color:\s*var\(--ok-on-bg\)/.test(css) &&
+   /\.pill\.on \.dot\s*\{[^}]*background:\s*currentColor/.test(css),
+   'the connection dot fills when the bridge is up, so the state is not colour-only');
+ok(/\.pill\s*\{[\s\S]*?color:\s*var\(--muted-on-bg\)/.test(css),
+   'the offline status uses the on-ground muted, which is the one that clears AA on paper');
+
+// The segmented view control. Both switchers are built by app.js, so this is the
+// one rule that has to serve Capture's three views and Analysis' two.
+ok(/\.viewtab\s*\{[\s\S]*?min-height:\s*var\(--touch\)/.test(css) &&
+   /\.viewtab\.active\s*\{[^}]*border-color:\s*var\(--accent\)/.test(css),
+   'the view tabs share one shape, and the selected one is marked in the accent');
+ok(/\.viewtab\.active\s*\{[^}]*font-weight:\s*700/.test(css),
+   'the selected view also gains weight, so selection does not rely on hue');
+
+// The bottom bar: 21px icons, 11px labels, and its own safe-area inset.
+ok(/\.tabbar\s*\{[\s\S]*?padding:\s*8px 4px calc\(8px \+ env\(safe-area-inset-bottom/.test(css),
+   'the bar adds the bottom inset, so the labels clear the gesture pill');
+ok(/\.tabbar \.tab \.icon\s*\{\s*color:\s*inherit;\s*width:\s*21px;\s*height:\s*21px/.test(css),
+   'the bar draws the existing SVG icons at 21px');
+ok(/\.tabbar \.tab\s*\{[\s\S]*?font-size:\s*11px/.test(css), 'the bar labels are 11px');
+
+// Safe areas and narrow screens. Both insets are present, and the one row that
+// can run out of room has a rule for when it does.
+ok(/header\s*\{[\s\S]*?calc\(env\(safe-area-inset-top/.test(css), 'the header honours the top inset');
+ok(/@media \(max-width: 360px\)/.test(css), 'the header has a rule for 320px screens');
+ok(/@media \(prefers-reduced-motion: reduce\)/.test(css),
+   'the press feedback respects prefers-reduced-motion');
+
+// The prototype is a reference, not a dependency: nothing from it is shipped.
+ok(!/xixchil-hybrid-v2|xixchil-hybrid-v2\(1\)/.test(css + html + js),
+   'the prototype is not referenced by anything that ships');
+
 // ── result ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${failures.length ? 'FAIL' : 'PASS'} — ${pass} checks passed, ${failures.length} failed`);
