@@ -384,6 +384,31 @@ ok(/class="pick-target"/.test(planHtml),
 ok((js.match(/analysisPlanHtml\(/g) || []).length === 2,
    'the plan output is drawn in exactly one place, so no page can clone the pick buttons');
 
+// The target's action pill. It used to be a plain <div>, so the most prominent thing
+// on the card — the one that names the action — could not be tapped: it looked like a
+// button and did nothing. It is a real control now for the one action that has a card
+// to route to, wired through the same handler the Pick button uses. The other action
+// types stay labels, because they have no card to send you to.
+const pillFn = js.match(/function tactionHtml\([\s\S]*?\n\}/)?.[0] || '';
+ok(/<button class="taction/.test(pillFn) && /data-idx/.test(pillFn) && /deauth-capture/.test(pillFn),
+   "the deauth-capture pill is drawn as a real button carrying the target's index");
+ok(/<div class="taction/.test(pillFn),
+   'the other action pills stay labels (there is no card to route them to)');
+ok(/closest\('\.pick-target, \.taction\[data-idx\]'\)/.test(js),
+   'one delegated handler serves the Pick button and the pill, so neither can go dead alone');
+
+// The burst's listening capture has to be collected. This was gated on
+// `state.stage === 'attack'` — a value nothing writes since Attack became its own tab
+// — so the burst fired, the radio heard the rejoin, the capture completed, and the app
+// never read it back: Crack showed nothing and nothing errored.
+// verify_state_gates.mjs fails on any dead gate; these assert the positive behaviour
+// that gate was meant to provide, so deleting the feature also fails the suite.
+const startAfterBurst = js.match(/async function onStartCaptureAfterBurst\([\s\S]*?\n\}/)?.[0] || '';
+ok(/awaitingBurstCapture = true;/.test(startAfterBurst),
+   'the listening capture arms the burst flag once it actually starts');
+ok(/if \(awaitingBurstCapture\) \{[\s\S]{0,80}?syncAfterBurst\(\)/.test(js),
+   'the post-burst capture is collected — syncAfterBurst is reachable from onEvent');
+
 // The three console cards are mirrored by an observer on #consoleCard, and the
 // observer dereferences their ids. A page split that drops one takes the observer
 // down with it, and the Capture page stops showing anything.

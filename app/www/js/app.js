@@ -547,11 +547,21 @@ function onEvent(json) {
     capture.onCaptureDone(json);
     stopCapTicker();
     log('ev', `capture finished on its own: ${json.frames ?? '?'} frames, ${json.dropped ?? '?'} dropped`);
-    // If this was an after-burst capture, auto-sync and auto-extract
-    if (state.stage === 'attack') {
+    // If this was the listening half of a burst, auto-sync and auto-extract.
+    //
+    // Deliberately NOT gated on state.stage. That gate read 'attack', a value
+    // nothing has written since Attack became its own tab — renderStagePanel()
+    // resets it to 'capture' and nothing sets it back — so the branch was
+    // unreachable and the burst's second half was never collected. The visible
+    // symptom was exactly the one it caused: the burst fires, the radio hears
+    // the rejoin, the capture completes, and the app never reads it back, so
+    // Crack reports nothing. The flag below is the state this needs, and it is
+    // owned by the only code that can know: the code that started the capture.
+    if (awaitingBurstCapture) {
+      awaitingBurstCapture = false;
       syncAfterBurst();
     }
-    if (state.stage === 'capture') refreshPanels();
+    refreshPanels();
     return;
   }
   if (json.event === 'portal_submission') {
@@ -569,7 +579,15 @@ function onEvent(json) {
     log('ev', `portal: a submission arrived from ${json.ip || 'a client'}`);
     // paintPortal, not renderStagePanel: a full re-render would wipe the page
     // textarea out from under an operator editing it when this lands.
-    if (state.stage === 'attack') paintPortal();
+    //
+    // Unconditional, like the burst's capture_done above. This used to read
+    // `state.stage === 'attack'`, which was dead for the same reason: nothing
+    // writes that value any more. A submission arriving while the operator was
+    // watching the portal therefore landed in `portalSubs` and was never drawn —
+    // the panel only caught up on the next unrelated repaint. paintPortal()
+    // already guards on #portalLive and #portalSubsBox existing, so calling it
+    // when the portal card is not on screen is a no-op, not a crash.
+    paintPortal();
     return;
   }
   // 'stage' and 'hb' describe the DEVICE's radio state. state.stage is the
@@ -1049,6 +1067,26 @@ async function onAnalysisSave() {
   }
 }
 
+/** The target's action pill.
+ *
+ *  For 'deauth-capture' this is a real control, not a label: the pill is the most
+ *  prominent affordance on the card and it names the action, so tapping it has to
+ *  do the action. It routes to the same place the Pick button does — Attacks with
+ *  the Force-a-handshake card open — because that is where the burst is fired.
+ *  A pill that reads as tappable and is not is worse than no pill at all, which is
+ *  exactly how it was read on the phone.
+ *
+ *  The other action types stay labels: 'listen' and 'associate' have no card on the
+ *  Attacks page to send you to, so a button there would be a second dead control.
+ */
+function tactionHtml(t, idx) {
+  const type = escapeHtml(t.action.type);
+  const label = `${Icon('attack', { size: 15 })}${escapeHtml(t.action.label)}`;
+  return t.action.type === 'deauth-capture'
+    ? `<button class="taction ${type}" data-idx="${idx}">${label}</button>`
+    : `<div class="taction ${type}">${label}</div>`;
+}
+
 function analysisPlanHtml(p) {
   // As in renderAnalyzePanel: every value that came off the air — SSIDs, BSSIDs,
   // the leaked names, the reason text — goes through escapeHtml before it
@@ -1076,7 +1114,7 @@ function analysisPlanHtml(p) {
         </div>
         <div class="tverdict">${escapeHtml(t.verdict)}</div>
         <ul class="reasons">${reasons}</ul>
-        <div class="taction ${escapeHtml(t.action.type)}">${Icon('attack', { size: 15 })}${escapeHtml(t.action.label)}</div>
+        ${tactionHtml(t, idx)}
       </div>`;
   }).join('');
 
@@ -2189,6 +2227,13 @@ async function onDeauthCapture() {
   refreshPanels();
 }
 
+/** True from the moment a burst's listening capture starts until its capture_done
+ *  lands. This is the flag state.stage used to carry for this one purpose; it was
+ *  dead the whole time Attack was its own tab, so nothing ever collected the
+ *  post-burst capture. Owned entirely by the burst flow: armed in
+ *  onStartCaptureAfterBurst, cleared here. */
+let awaitingBurstCapture = false;
+
 /** Auto-sync and extract after the burst capture finishes. */
 let autoExtractRun = 0;
 async function syncAfterBurst() {
@@ -2241,10 +2286,15 @@ async function onStartCaptureAfterBurst(channel) {
   if (capture.running) { log('ev', 'deauth: capture already running, leaving it alone'); return; }
   try {
     await capture.start({ channel, durationMs: 20000 });
+    // Arm the flag BEFORE the log, the repaint and the ticker. capture_done can
+    // land the instant the board accepts the capture's 20 s, so a flag set one
+    // microtask later would miss its own completion and reintroduce the bug.
+    awaitingBurstCapture = true;
     log('ev', `capture: listening on ch${channel} for the rejoin — 20 s`);
     refreshPanels();
     startCapTicker();
   } catch (e) {
+    awaitingBurstCapture = false;
     log('err', 'capture after burst: ' + e.message);
   }
 }
@@ -3220,9 +3270,12 @@ function boot() {
     localStorage.removeItem('bridgeToken');
   }
 
-  // Target pick buttons use event delegation — they're rendered dynamically
+  // Target pick buttons use event delegation — they're rendered dynamically.
+  // The deauth pill is the second route into the same action: it is the card's most
+  // prominent affordance and it names the action, so it must not be inert. Both
+  // carry data-idx, so one handler reads both.
   document.addEventListener('click', (e) => {
-    const btn = e.target.closest('.pick-target');
+    const btn = e.target.closest('.pick-target, .taction[data-idx]');
     if (btn) onPickTarget({ currentTarget: btn });
   });
 
@@ -3651,7 +3704,13 @@ async function pollPortalStatus() {
     log('err', 'portal status: ' + e.message);
   }
   // Paint, do not re-render: a full re-render would wipe the page textarea.
-  if (state.stage === 'attack') paintPortal();
+  //
+  // Unconditional — the third dead `state.stage === 'attack'` gate. This one is why
+  // the twin's live counters (DNS queries, HTTP hits, stations, queued submissions)
+  // sat still while the portal was armed and running: the poll fired every 2 s and
+  // then threw its result away. paintPortal() guards its own lookups, so there is
+  // nothing to protect it from.
+  paintPortal();
   if (portalRunning) portalTicker = setTimeout(pollPortalStatus, 2000);
 }
 

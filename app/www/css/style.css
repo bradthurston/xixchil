@@ -513,6 +513,16 @@ button:focus-visible, .device:focus-visible, .viewtab:focus-visible {
 .taction.none, .taction.listen, .taction.associate {
   background: transparent; border-color: var(--line); color: var(--muted);
 }
+/* A target whose action is deauth-capture draws this pill as a real <button>, not a
+   label: the pill names the action and is the most prominent thing on the card, so
+   it has to carry it. It routes to the same place the Pick button does. Sized to
+   fill like the div version so the card looks unchanged, and it keeps the 44px
+   touch floor from the base button rule — it is the biggest target on the card.
+   The other action types stay plain divs, because they are labels. */
+button.taction {
+  width: 100%; justify-content: flex-start; text-align: left; cursor: pointer;
+}
+button.taction:active { filter: brightness(.94); }
 
 .rogueitem {
   border: 1px solid var(--line); border-left-width: 3px;
