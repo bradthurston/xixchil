@@ -862,3 +862,7 @@ details.atk[open] .atkchev { transform: rotate(180deg); }
 figure.mantis { margin: 0; }
 figure.mantis img { width: 105px; height: 70px; object-fit: contain; border: none !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; }
 .card h2 { font-weight: 400; }
+
+#connectCard .empty { padding: 0; text-align: left; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+#connectCard .empty .icon { display: inline-block; margin: 0; width: 18px !important; height: 18px !important; opacity: 0.8; }
+#connectCard .empty br { display: none; }
