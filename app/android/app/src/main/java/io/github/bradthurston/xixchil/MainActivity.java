@@ -21,6 +21,7 @@ public class MainActivity extends BridgeActivity {
         // Before super.onCreate: Capacitor collects plugins during it, so a plugin
         // registered afterwards is not reachable from JS.
         registerPlugin(CaptureImportPlugin.class);
+        registerPlugin(AppLauncherPlugin.class);
         super.onCreate(savedInstanceState);
         CaptureImportPlugin.stash(this, getIntent());
     }

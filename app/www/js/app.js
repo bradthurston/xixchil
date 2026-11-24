@@ -561,12 +561,14 @@ function renderStagePanel() {
   const box = $('#stagePanel');
   if (!box) return;
   // `state.stage` can still hold 'attack' from before the split. Rather than
-  // render an empty panel, fall back to the first stage this panel owns.
+  // render an empty panel, fall back to the first stage this panel owns. There is
+  // deliberately no 'attack' branch below: Attacks is its own page now, and a branch
+  // here would be unreachable — this guard would have reset the value first, so it
+  // would only ever look like working code.
   if (!['capture', 'analyze', 'analysis', 'wardrive'].includes(state.stage)) state.stage = 'capture';
   if (state.stage === 'capture') { renderCapturePanel(box); return; }
   if (state.stage === 'analyze') { renderAnalyzePanel(box); return; }
   if (state.stage === 'analysis') { renderAnalysisPanel(box); return; }
-  if (state.stage === 'attack') { renderAttackPanel(box); return; }
   if (state.stage === 'wardrive') { renderWardrivePanel(box); return; }
   box.innerHTML = `<div class="empty">${Icon(STAGE_ICONS[state.stage], { size: 30 })}
     <strong>${state.stage}</strong><br>Not wired yet.</div>`;
@@ -1232,6 +1234,11 @@ function renderAttackPanel(box, opts = {}) {
   if (opts.only)    list = list.filter((a) => a.id === opts.only);
   if (opts.exclude) list = list.filter((a) => a.id !== opts.exclude);
   const heldBack = blockedOnTransmit(ctx).filter((a) => list.some((b) => b.id === a.id));
+  // The bridge summary belongs to the panel that can actually crack. Both pages draw
+  // this panel, and the summary carried #brOpenSettings — one id, two copies, so the
+  // wiring's box lookup and any document lookup disagreed about which button they
+  // meant. Emit it only where the cracking card is, and the id exists once again.
+  const showsCrack = list.some((a) => a.id === 'crack');
   const head = opts.head || {
     icon: 'attack',
     name: 'Attack',
@@ -1291,6 +1298,7 @@ function renderAttackPanel(box, opts = {}) {
       </div>
     </div>
 
+    ${showsCrack ? `
     <div class="secsum">
       <div class="sechead">${Icon('link', { size: 16 })} Crack bridge</div>
       ${bridgeStateHtml()}
@@ -1299,6 +1307,7 @@ function renderAttackPanel(box, opts = {}) {
           ${Icon('gear', { size: 14 })}Bridge settings</button>
       </div>
     </div>
+` : ''}
 
     <div class="sechead">${Icon('list', { size: 16 })} Attacks (${list.length})</div>
     <div class="atklist">${listHtml}</div>
@@ -2257,21 +2266,37 @@ async function onBridgeTest() {
 }
 
 function onExtractHandshakes() {
-  const w = capture?.writer;
-  if (!w?.chunks?.length) return;
+  // Two sources, and they are not interchangeable: a live capture hands over the
+  // chunks as they were written, an imported file hands over the frames the importer
+  // parsed. This used to read the live writer only, so with an imported capture on
+  // screen the button was live, tapped, and did nothing whatsoever — no log line, no
+  // repaint, no clue as to why. Read whichever is actually there, and name it in the
+  // log, so "nothing happened" can never be the whole story again.
+  const live = capture?.writer?.chunks?.length ? capture.writer.chunks : null;
+  const imported = importedCapture?.chunks?.length ? importedCapture.chunks : null;
+  const chunks = live || imported;
+  if (!chunks) {
+    log('err', 'extract: nothing to read — capture a handshake, or import a capture file first');
+    return;
+  }
+  const from = live ? 'the live capture' : `the imported file (${importedCapture.name})`;
   const t0 = Date.now();
   try {
-    handshakeResult = extractHandshakes(w.chunks);
+    handshakeResult = extractHandshakes(chunks);
   } catch (e) {
     log('err', 'extract: ' + e.message);
     return;
   }
   crackJob = null;
   const c = handshakeResult.counts;
-  log('ev', `handshakes: ${handshakeResult.handshakes.length} crackable from ${w.chunks.length} frames ` +
-    `in ${Date.now() - t0} ms (EAPOL ${c.eapolFrames}, M1 ${c.m1}, M2 ${c.m2}, M3 ${c.m3}, M4 ${c.m4})`);
+  const n = handshakeResult.handshakes.length;
+  const rate = `in ${Date.now() - t0} ms (EAPOL ${c.eapolFrames}, M1 ${c.m1}, ` +
+    `M2 ${c.m2}, M3 ${c.m3}, M4 ${c.m4})`;
+  if (n) log('ev', `handshakes: ${n} crackable from ${chunks.length} frames ${rate}`);
+  else log('ev', `handshakes: none crackable in ${from} — ${chunks.length} frames, ${rate}`);
   if (handshakeResult.incomplete.length) {
-    log('ev', `${handshakeResult.incomplete.length} key exchange(s) were incomplete`);
+    log('ev', `${handshakeResult.incomplete.length} key exchange(s) were incomplete — a ` +
+      'handshake needs all four EAPOL messages, or a PMKID on its own');
   }
   refreshPanels();
 }
@@ -2396,20 +2421,21 @@ function renderImportResult() {
   $('#importCrack')?.addEventListener('click', revealCrackAfterImport);
 }
 
-/**
- * Open the attack stage on the strength of an import alone.
+/** After an import that really did contain a handshake, go where the handshake is
+ *  worth anything: the Crack page, which lists what came out of the file and offers
+ *  the search on the bridge. Cracking an imported file needs no board — the phone
+ *  extracts and the bridge searches — so this does not wait for a device.
  *
- * The stage panel is normally gated on a connected device, but cracking an imported
- * file needs no board — the phone extracts and the bridge searches. So the flow is
- * revealed here instead of waiting for a device that will never appear.
+ *  This used to unhide the Capture page's flow cards and set `state.stage = 'attack'`.
+ *  The cards are already revealed by the observer on #consoleCard, and 'attack' is a
+ *  stage renderStagePanel() does not own — its guard resets anything outside
+ *  capture/analyze/analysis/wardrive to 'capture' before the branch that would have
+ *  used it, so the import repainted the Capture step and left the operator with no
+ *  on-screen route to the handshake they had just imported.
  */
 function revealCrackAfterImport() {
   if (!handshakeResult?.handshakes?.length) return;
-  $('#consoleCard2')?.classList.remove('hidden');
-  $('#consoleCard3')?.classList.remove('hidden');
-  state.stage = 'attack';
-  renderStages();
-  refreshPanels();
+  setPage('crack');
 }
 
 async function onCrackRun() {
@@ -2635,6 +2661,10 @@ const PAGE_TABS = [
 ];
 const PAGE_KEY = 'xixchil-page';
 
+/** The tunnel the bridge is reached over, when it is not on the local network.
+ *  Named here so the launcher call and the manifest's <queries> entry cannot drift. */
+const TAILSCALE_PKG = 'com.tailscale.ipn';
+
 /** The last section you were on, ignoring Settings — so the gear can put you back. */
 let lastSection = 'home';
 
@@ -2680,44 +2710,128 @@ function refreshPanels() {
   }
 }
 
-/** The hub: what is connected, and the way in to everything else. */
+/** Home. Two things only: what is connected, and where to go next.
+ *
+ *  It used to carry three navigation surfaces — a chip row, a module grid and the
+ *  tabbar — and between them the chips and the grid pointed at the same two pages.
+ *  The chips are gone and the grid is one status list; the tabbar stays, because
+ *  it is for switching while you are already working somewhere.
+ *
+ *  The board is deliberately not a row in that list: the Device/Link card above it
+ *  is the board, and the old "Board" tile pointed at the page you were already on.
+ */
 function renderHub() {
-  const card = $('#hubCard'), acts = $('#hubActions'), grid = $('#hubModules');
-  if (!card || !acts || !grid) return;
+  const card = $('#hubCard'), list = $('#hubModules'), bridge = $('#bridgeHome');
+  if (!card || !list || !bridge) return;
   card.classList.remove('hidden');
 
-  const connected = !document.getElementById('consoleCard')?.classList.contains('hidden');
   const all = attackList(attackContext());
   const ready = all.filter((x) => x.ready).length;
   const chunks = capture?.writer?.chunks?.length || 0;
   const capLine = capture?.running ? `capturing · ${chunks} chunk(s)`
     : chunks ? `${chunks} chunk(s) buffered` : 'idle';
-  const bridgeLine = bridgeStatus?.ok ? 'bridge reachable'
-    : bridgeError ? 'bridge unreachable' : 'not tested';
   const dongleLine = ($('#dongleStatus')?.textContent || 'not connected').trim();
   const wardriving = !!wardriveActive();
+  const hs = handshakeResult?.handshakes?.length || 0;
+  const logLines = logEl()?.childElementCount || 0;
 
-  acts.innerHTML = [
-    { page: 'capture', icon: 'capture',  label: 'Capture' },
-    { page: 'attacks', icon: 'attack',   label: 'Attacks' },
-    { page: 'crack',   icon: 'key',      label: 'Crack'   },
-    { page: 'logs',    icon: 'terminal', label: 'Logs'    },
-  ].map((x) => `<button class="chip" data-page="${x.page}">${Icon(x.icon, { size: 15 })}${x.label}</button>`).join('');
-
-  const tiles = [
-    { page: 'home',    icon: 'device',  name: 'Board',   sub: connected ? 'linked' : 'offline',          on: connected },
-    { page: 'capture', icon: 'capture', name: 'Capture', sub: capLine,                                   on: !!capture?.running },
-    { page: 'capture', icon: 'scan',    name: 'Wardrive',sub: wardriving ? 'running' : 'idle',           on: wardriving },
-    { page: 'attacks', icon: 'attack',  name: 'Attacks', sub: `${ready} of ${all.length} ready`,         on: ready > 0 },
-    { page: 'attacks', icon: 'plug',    name: 'Dongle',  sub: dongleLine,    scroll: 'dongleCard',       on: dongleLine.startsWith('linked') },
-    { page: 'crack',   icon: 'key',     name: 'Crack',   sub: bridgeLine,                                on: !!bridgeStatus?.ok },
+  // Every row is a whole button, and every row lands on its page. `scroll` names the
+  // thing on that page the row is talking about, so "Dongle — not connected" opens
+  // Attacks at the dongle rather than at the top.
+  const rows = [
+    { page: 'capture', icon: 'capture',  name: 'Capture',  sub: capLine,
+      on: !!capture?.running },
+    { page: 'capture', icon: 'scan',     name: 'Wardrive', sub: wardriving ? 'running' : 'idle',
+      on: wardriving, scroll: 'wardriveCard' },
+    { page: 'attacks', icon: 'attack',   name: 'Attacks',  sub: `${ready} of ${all.length} ready`,
+      on: ready > 0 },
+    { page: 'attacks', icon: 'plug',     name: 'Dongle',   sub: dongleLine,
+      on: dongleLine.startsWith('linked'), scroll: 'dongleCard' },
+    { page: 'crack',   icon: 'key',      name: 'Crack',
+      sub: hs ? `${hs} handshake(s) to search` : 'nothing extracted yet', on: !!hs },
+    { page: 'logs',    icon: 'terminal', name: 'Logs',     sub: `${logLines} line(s)`,
+      on: false },
   ];
-  grid.innerHTML = tiles.map((t) => `
-    <button class="mod${t.on ? ' on' : ''}" data-page="${t.page}"${t.scroll ? ` data-scroll="${t.scroll}"` : ''}>
-      <span class="modicon">${Icon(t.icon, { size: 18 })}</span>
-      <span class="modname">${escapeHtml(t.name)}</span>
-      <span class="modsub">${escapeHtml(t.sub)}</span>
+  list.innerHTML = rows.map((r) => `
+    <button class="srow${r.on ? ' on' : ''}" data-page="${r.page}"${r.scroll ? ` data-scroll="${r.scroll}"` : ''}>
+      <span class="sicon">${Icon(r.icon, { size: 17 })}</span>
+      <span class="sname">${escapeHtml(r.name)}</span>
+      <span class="ssub">${escapeHtml(r.sub)}</span>
+      <span class="schev">${Icon('chevron', { size: 14 })}</span>
     </button>`).join('');
+
+  bridge.innerHTML = bridgeHomeHtml();
+  // Scoped to the card: a bare $('#…') would reach the Settings page's copy of a
+  // control with the same name first and leave this one dead.
+  bridge.querySelector('#brHomeTest')?.addEventListener('click', onBridgeTest);
+  bridge.querySelector('#brHomeOpen')?.addEventListener('click', () => setPage('settings'));
+  bridge.querySelector('#tsOpen')?.addEventListener('click', onOpenTailscale);
+}
+
+/** The bridge on Home: where it is, whether it answers, what it would search with.
+ *
+ *  Read-only by design — the URL and the token are set once and left alone, so they
+ *  live in Settings and this card never carries a credential. It used to be that
+ *  the only way to see the bridge was to open the Crack page, which is the page you
+ *  go to when you already intend to crack something.
+ */
+function bridgeHomeHtml() {
+  const cfg = bridgeConfig();
+  let host = cfg.url || 'no address set';
+  try { if (cfg.url) host = new URL(cfg.url).host; } catch (e) { /* show it as typed */ }
+  const dot = bridgeStatus?.ok ? 'on' : bridgeError ? 'bad' : '';
+  const line = bridgeStatus?.ok
+    ? `hashcat ${bridgeStatus.hashcat || '?'} · mode ${bridgeStatus.mode || '?'} · queued ${bridgeStatus.queued ?? 0}`
+    : bridgeError ? 'unreachable' : 'not tested yet';
+  return `
+    <div class="brow">
+      <span class="bdot ${dot}"></span>
+      <span class="bhost">${escapeHtml(host)}</span>
+      <span class="bsub">${escapeHtml(line)}</span>
+    </div>
+    ${cfg.token ? '' : '<div class="pnlnote" style="margin:9px 0 0">No token set — the bridge '
+      + 'needs one before it will search anything. Add it in Settings.</div>'}
+    ${bridgeError ? `<div class="finding high" style="margin-top:9px"><div class="ftitle">`
+      + `${Icon('alert', { size: 15 })}Bridge unreachable</div>`
+      + `<div class="fdetail">${escapeHtml(bridgeError)}</div></div>` : ''}
+    <div class="row" style="margin-top:10px">
+      <button id="brHomeTest" class="ghost">${Icon('link', { size: 17 })}Test bridge now</button>
+      <button id="brHomeOpen" class="ghost">${Icon('gear', { size: 17 })}Bridge settings</button>
+    </div>
+    ${tailscaleRowHtml()}`;
+}
+
+/** Tailscale is the tunnel the bridge is reached over, so it sits under the bridge
+ *  line rather than in a card of its own.
+ *
+ *  Their app exposes no public connect action — a third-party app cannot turn the
+ *  tunnel on — so this says "open", honestly, and the bridge dot above is what tells
+ *  you whether the tunnel came up. */
+function tailscaleRowHtml() {
+  return `
+    <button class="srow tsrow" id="tsOpen">
+      <span class="sicon">${Icon('link', { size: 17 })}</span>
+      <span class="sname">Tailscale</span>
+      <span class="ssub">open the tunnel app</span>
+      <span class="schev">${Icon('chevron', { size: 14 })}</span>
+    </button>`;
+}
+
+/** Open another app on the phone. A plugin call rather than a web intent: Android
+ *  11+ filters getLaunchIntentForPackage unless the package is named in <queries>,
+ *  and the plugin is the only thing here that can start an activity. */
+async function onOpenTailscale() {
+  const launcher = window.Capacitor?.Plugins?.AppLauncher;
+  if (!launcher) {
+    log('err', 'tailscale: no launcher in this build — only the Android app can open it');
+    return;
+  }
+  try {
+    await launcher.open({ package: TAILSCALE_PKG });
+    log('ev', 'tailscale: opened — the bridge dot is what says whether it came up');
+  } catch (e) {
+    log('err', 'tailscale: ' + (e?.message || e));
+  }
 }
 
 /** The Crack page draws the same attack card, narrowed to the one attack. */
@@ -2796,16 +2910,24 @@ function renderSettingsPanel() {
 }
 
 function wireBridgeConfig() {
-  $('#brUrl')?.addEventListener('change', (e) => {
+  // Scoped to the Settings panel, like every other panel's wiring. The Crack page's
+  // card carries a "Test bridge now" button of its own under the same id (#brTest),
+  // and it is drawn earlier in the document — so a document-wide $('#brTest') here
+  // bound the Settings button's listener to the Crack page's copy and left the button
+  // on this page dead.
+  const box = $('#settingsPanel');
+  if (!box) return;
+  const $s = (sel) => box.querySelector(sel);
+  $s('#brUrl')?.addEventListener('change', (e) => {
     saveBridgeUrl(e.target.value);
     localStorage.setItem('bridgeUrl', e.target.value.trim());
     bridgeStatus = null; bridgeError = null;
     renderSettingsPanel(); refreshPanels();
   });
-  $('#brUrlSelect')?.addEventListener('change', (e) => {
+  $s('#brUrlSelect')?.addEventListener('change', (e) => {
     const val = e.target.value;
     if (!val) return;
-    const input = $('#brUrl');
+    const input = $s('#brUrl');
     if (input) input.value = val;
     saveBridgeUrl(val);
     localStorage.setItem('bridgeUrl', val.trim());
@@ -2813,12 +2935,12 @@ function wireBridgeConfig() {
     bridgeStatus = null; bridgeError = null;
     renderSettingsPanel(); refreshPanels();
   });
-  $('#brToken')?.addEventListener('change', (e) => {
+  $s('#brToken')?.addEventListener('change', (e) => {
     localStorage.setItem('bridgeToken', e.target.value.trim());
     bridgeStatus = null; bridgeError = null;
     renderSettingsPanel(); refreshPanels();
   });
-  $('#brTest')?.addEventListener('click', onBridgeTest);
+  $s('#brTest')?.addEventListener('click', onBridgeTest);
 }
 
 /** The quick scan: ask the linked dongle what it can hear, in one tap.
@@ -3077,8 +3199,8 @@ function boot() {
         ${Icon(t.icon, { size: 19 })}<span>${t.label}</span>
       </button>`).join('');
   }
-  // One delegated handler for every jump-to-page control: the tabs, the hub chips,
-  // the hub tiles, and any "go there" button a panel grows later.
+  // One delegated handler for every jump-to-page control: the tabs, the module rows
+  // on Home, and any "go there" button a panel grows later.
   document.addEventListener('click', (e) => {
     const jump = e.target.closest('[data-page]');
     if (jump && !jump.disabled) {

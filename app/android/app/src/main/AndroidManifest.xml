@@ -1,6 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Package visibility (Android 11+). getLaunchIntentForPackage is filtered
+         against this list: without an entry here it returns null for an app that is
+         plainly installed, the launcher call throws, and the button looks dead.
+         Tailscale is the one foreign app this build opens — the tunnel the crack
+         bridge is reached over. Keep this in step with TAILSCALE_PKG in app.js. -->
+    <queries>
+        <package android:name="com.tailscale.ipn" />
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"

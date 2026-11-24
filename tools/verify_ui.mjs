@@ -224,8 +224,70 @@ const body = js.match(/function renderAttackPanel\(box, opts = \{\}\) \{([\s\S]*
 ok((js.match(/renderAttackPanel\(\$\('#attackPanel'\), \{ exclude: 'crack' \}\);/g) || []).length === 2,
    'the Attacks page draws the attack list without the cracking card (the duplicate of the Crack tab)');
 
-ok(/const \$b = \(sel\) => box\.querySelector\(sel\)/.test(body) && !/\$\(['"`]#/.test(body),
+ok(/const \$b = \(sel\) => box\.querySelector\(sel\)/.test(body) && !/\$\('['"`]#/.test(body),
    'the attack panel wires its controls through its own node, never the document');
+
+// The panel also draws a "Crack bridge" summary carrying #brOpenSettings, and both
+// pages draw the panel — so the id existed twice and the box lookup and a document
+// lookup could mean different buttons. The summary is drawn only where the crack
+// card is, so the id exists once.
+ok(/const showsCrack = list\.some\(\(a\) => a\.id === 'crack'\)/.test(body) &&
+   /\$\{showsCrack \? `[\s\S]{0,240}?brOpenSettings/.test(body),
+   'the bridge summary (and #brOpenSettings with it) is drawn only on the cracking page');
+
+// ── the same trap, three more times ──────────────────────────────────────────
+//
+// The duplicate-id bug above is a class, not an incident. Every panel in this file
+// that wires its own controls through a document-wide $() is one duplicated id away
+// from a dead button, and three were: the extractor read only a live capture, and
+// the bridge form was wired document-wide.
+
+// 1. onExtractHandshakes looked at capture.writer.chunks only and returned in
+// silence when there were none. With an imported capture on screen the button was
+// live, tapped, and did nothing at all — the exact report. Read both sources, and
+// never return without saying something.
+const extractor = js.match(/function onExtractHandshakes\(\) \{([\s\S]*?)\n\}/)?.[1] || '';
+ok(/importedCapture\?\.chunks/.test(extractor),
+   'the extractor reads an imported capture as well as a live one');
+ok(!/if \(!w\?\.chunks\?\.length\) return;/.test(extractor),
+   'the extractor never returns in silence — "nothing happened" is not an outcome');
+
+// 2. wireBridgeConfig used $() document-wide, and #brTest exists twice (the Settings
+// page's form and the Crack page's card). #crackPanel comes first in index.html, so
+// the Settings page's Test connection button was bound to the Crack page's copy.
+const wire = js.match(/function wireBridgeConfig\(\) \{([\s\S]*?)\n\}/)?.[1] || '';
+ok(/const box = \$\('#settingsPanel'\)/.test(wire) && !/\$\('['"`]#/.test(wire),
+   'the bridge settings form wires through its own panel, not the document');
+
+// 3. Home used to carry three ways to the same two pages: a chip row, a 2-up tile
+// grid, and the tabbar. One list now, and the banner is page furniture rather than
+// a member of any card.
+ok(!/id="hubActions"/.test(html) && !/\$\('#hubActions'\)/.test(js),
+   'the Home chip row is gone — one navigation list, not three');
+ok(/<figure class="mantis">\s*<img src="assets\/mantis-banner\.jpg"/.test(html),
+   'the mantis sits directly under the title, outside every card');
+ok((html.match(/<img\b/g) || []).length === 1,
+   'the Home page still has exactly one image — the banner, shown whole');
+
+// 4. The Tailscale row names a package in JS and declares it in the manifest. From
+// Android 11 the launch is filtered against <queries>: if the two drift apart the
+// button silently does nothing, which is the same failure as a dead listener.
+const manifest = readFileSync(
+  join(here, '..', 'app', 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf8');
+const tsPkg = js.match(/const TAILSCALE_PKG = '([^']+)'/)?.[1] || '';
+ok(!!tsPkg && manifest.includes(`android:name="${tsPkg}"`),
+   `the launched package (${tsPkg || 'none'}) is declared in the manifest's <queries>`);
+ok(/window\.Capacitor\?\.Plugins\?\.AppLauncher/.test(js),
+   'opening another app goes through the plugin, not a web intent');
+
+// 5. The import → crack reveal. It set state.stage = 'attack', which renderStagePanel
+// resets to 'capture' before the branch that would use it, so the reveal went nowhere.
+const reveal = js.match(/function revealCrackAfterImport\(\) \{([\s\S]*?)\n\}/)?.[1] || '';
+ok(!/state\.stage = 'attack'/.test(reveal) && /setPage\('crack'\)/.test(reveal),
+   'an import with a handshake opens the Crack page instead of a stage that cannot render');
+const stagePanel = js.match(/function renderStagePanel\(\) \{([\s\S]*?)\n\}/)?.[1] || '';
+ok(!/state\.stage === 'attack'/.test(stagePanel),
+   'renderStagePanel has no unreachable attack branch (Attacks is its own page)');
 
 // ── result ───────────────────────────────────────────────────────────────────
 

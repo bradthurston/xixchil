@@ -54,14 +54,17 @@
          one that answers "what is connected and what can I do with it". -->
     <section class="page active" id="page-home">
 
-      <section class="card hidden" id="hubCard">
-        <h2>Quick actions</h2>
-        <div class="chips" id="hubActions"></div>
-        <div class="sechead" id="hubModulesHead">Modules</div>
-        <div class="modgrid" id="hubModules"></div>
-      </section>
+      <!-- The painting the app is named for, directly under the title and not inside
+           any card. Shown at its own proportions and never cropped — the antennae
+           reach within ~2% of the top edge and a hind leg within ~2% of the bottom,
+           so any band crop takes the insect's head-tip or its feet with it. The
+           paper is the app's own cream, so it reads as a header, not a pasted photo. -->
+      <figure class="mantis">
+        <img src="assets/mantis-banner.jpg"
+             alt="A praying mantis in black ink on warm paper — forelegs folded, long body slanting away">
+      </figure>
 
-        <section class="card" id="connectCard">
+      <section class="card" id="connectCard">
         <h2>Device</h2>
         <div id="deviceList"></div>
         <button class="block ghost" id="refreshBtn" style="margin-top:10px"></button>
@@ -74,6 +77,25 @@
           <button id="pingBtn"></button>
           <button class="ghost" id="linkBtn"></button>
         </div>
+      </section>
+
+      <!-- The GPU box, without its credentials: where it is, whether it answers, what
+           it would be searching with. Set once and left alone, so the URL and token
+           live in Settings (the gear in the header) and this card only reads out.
+           Tailscale rides along here because the bridge is only reachable when the
+           tunnel is up. -->
+      <section class="card" id="bridgeCard">
+        <h2>Bridge</h2>
+        <div id="bridgeHome"></div>
+      </section>
+
+      <!-- One row per module, one list, every page reachable from here. This is the
+           only navigation on Home: the chip row above the modules and the module
+           grid used to point at the same two pages three times over. The tabbar
+           stays for switching while you are already working. -->
+      <section class="card hidden" id="hubCard">
+        <h2>Modules</h2>
+        <div class="statuslist" id="hubModules"></div>
       </section>
     </section>
 

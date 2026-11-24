@@ -157,6 +157,18 @@ header .wordmark { height: 16.75px; width: auto; max-width: 100%; flex: none; fi
 /* ── main ───────────────────────────────────────────────── */
 main { flex: 1; overflow-y: auto; padding: var(--pad); padding-bottom: var(--pad); }
 
+/* ── the plate ────────────────────────────────────────────────────────────────
+   The painting the app is named for, directly under the title, outside any card.
+   Shown at its own proportions and never cropped: the antennae reach within ~2% of
+   the top edge and a hind leg within ~2% of the bottom, so a band crop takes the
+   insect's head-tip or its feet with it. The hairline makes the cream paper read as
+   a plate on the dark ground rather than as a hole in the page. */
+.mantis { margin: 0 0 12px; }
+.mantis img {
+  display: block; width: 100%; height: auto;
+  border: 1px solid var(--line); border-radius: var(--radius);
+}
+
 .card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -643,16 +655,38 @@ details[open] > summary::before { content: '▾'; }
    now, in the same words the panels themselves use — no second vocabulary.  */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { font-size: 12px; padding: 7px 11px; gap: 6px; }
-.modgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 4px; }
-.mod {
-  display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start;
-  gap: 1px; text-align: left; padding: 9px 10px; line-height: 1.25;
+/* ── the module list ──────────────────────────────────────────────────────────
+   One row per module and the whole row is the button. This replaces the 2-up tile
+   grid (and the chip row above it), which between them pointed at the same two
+   pages. The right-hand column is the state, so the list reads as a status board
+   first and a set of links second. */
+.statuslist { display: flex; flex-direction: column; gap: 5px; }
+.srow {
+  display: grid; grid-template-columns: auto auto 1fr auto;
+  align-items: center; gap: 9px; width: 100%; text-align: left;
+  padding: 10px 11px; line-height: 1.25;
 }
-.mod .modicon { display: flex; color: var(--muted); }
-.mod .modname { font-size: 12.5px; font-weight: 650; }
-.mod .modsub  { font-size: 11px; font-weight: 500; color: var(--muted); }
-.mod.on { border-color: var(--accent-line); background: var(--accent-bg); }
-.mod.on .modicon, .mod.on .modsub { color: var(--accent-hi); }
+.srow .sicon { display: flex; color: var(--muted); }
+.srow .sname { font-size: 13px; font-weight: 650; }
+.srow .ssub  {
+  font-size: 11.5px; font-weight: 500; color: var(--muted);
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+.srow .schev { display: flex; color: var(--dim); }
+.srow.on { border-color: var(--accent-line); background: var(--accent-bg); }
+.srow.on .sicon, .srow.on .ssub { color: var(--accent-hi); }
+
+/* ── the bridge read-out, on Home ─────────────────────────────────────────────
+   A dot, the host, and what the bridge answered. The dot is the only thing here
+   that is not just text, because the state is the whole point of the row. */
+.brow { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.bdot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); flex: none; }
+.bdot.on  { background: var(--ok);  box-shadow: 0 0 0 3px var(--ok-bg); }
+.bdot.bad { background: var(--err); box-shadow: 0 0 0 3px var(--err-bg); }
+.bhost { font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
+.bsub  { font-size: 11.5px; color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+/* Tailscale rides under the bridge line in the same row shape, without the badge. */
+.tsrow { margin-top: 9px; }
 
 /* The fold in the MouseJack panel and the dongle's hand tools. */
 #mjAdvanced { margin-top: 10px; }
