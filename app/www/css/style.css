@@ -34,10 +34,16 @@
   --text:        var(--fg);
   --text-2:      #C8BFA6;   /* tint */
   --text-strong: #F8F4E6;   /* 象牙色 zōgeiro — the prototype's own paper */
-  --dim:         #6A6553;   /* tint */
+  --dim:         #9C957D;   /* de-emphasis, not illegibility: 5.06:1 on a panel,
+                                still a step below --muted (5.86:1) */   /* tint */
   /* On the ink ground the palette's own muted and green already clear AA
      (7.45:1 and 8.57:1), so on-ground copy just uses them. Paper cannot. */
   --muted-on-bg: var(--muted);
+  /* On the log ground the received/error/event colours are only legible as-is in
+     Ink; Paper aliases them to its own darkened variants below. */
+  --ok-on-log:   var(--ok);
+  --err-on-log:  var(--err);
+  --warn-on-log: var(--warn);
   --ok-on-bg:    var(--green);
 
   --accent-hi:   #F59473;   /* 洗朱 araishu */
@@ -45,7 +51,7 @@
   --accent-line: #B4501F;   /* tint */
   --accent-dk:   #8F2E14;   /* 弁柄色 bengara — red iron oxide */
   --accent-bg:   #2A1710;   /* tint */
-  --accent-fg:   #FBEFE4;   /* tint — type ON a tinted accent panel */
+  --accent-fg:   #F59473;   /* type ON a tinted accent surface (7.62:1) */
   /* Type on a FILLED accent control. The prototype hard-codes white here, which
      on this ground is 3.36:1 — under AA. The ink ground itself is 5.73:1, and
      vermilion under black is the older, more correct reading of the seal. */
@@ -100,20 +106,29 @@
   --text:        var(--fg);
   --text-2:      #4A3B2E;   /* tint */
   --text-strong: #14100C;   /* tint */
-  --dim:         #857A60;   /* tint */
+  --dim:         var(--muted-on-bg);   /* the dim tier has to clear AA on the LOG
+                                (#E2D6B8) as well as the panel: --muted itself is
+                                3.87:1 there, this is 5.01:1 */   /* tint */
   /* Not the palette's muted: #746650 is 3.72:1 on this ground and the palette's
      evergreen is 3.57:1, both under AA for normal text. These two are the same
      pigments darkened until on-ground copy clears it (4.81:1 and 4.61:1).
      Inside a panel the palette's own values are used and both clear AA. */
   --muted-on-bg: #63553F;
   --ok-on-bg:    #006833;
+  /* The log ground (#E2D6B8) is darker than the panel, which drags the palette's
+     own ok/err/warn under AA there (3.72 / 4.33 / 3.79:1). These are those three,
+     darkened until they clear it and no further. */
+  --ok-on-log:   #00622F;
+  --err-on-log:  #A81F26;
+  --warn-on-log: #74520C;
 
-  --accent-hi:   #B4501F;   /* 洗朱 */
+  --accent-hi:   #9C3612;   /* 4.73:1 on the ground, 4.93:1 in the log */   /* 洗朱 */
   --accent-mid:  #C9764F;   /* tint */
   --accent-line: #B4501F;   /* tint */
   --accent-dk:   #6E2410;   /* tint */
   --accent-bg:   #F5E3D6;   /* tint */
-  --accent-fg:   #FBF2E6;   /* tint */
+  --accent-fg:   #6E2410;   /* type ON a tinted accent surface (8.76:1) — near-white
+t                                on this pale tint measured 1.12:1 */
   --on-accent:   #FFFFFF;   /* the prototype's own choice, and 8.17:1 here */
 
   --ok:          var(--green);
@@ -316,9 +331,9 @@ button.danger  { background: var(--danger-bg); border-color: var(--danger-line);
 }
 #log .t  { color: var(--dim); }
 #log .tx { color: var(--accent-hi); }
-#log .rx { color: var(--ok); }
-#log .er { color: var(--err); }
-#log .ev { color: var(--warn); }
+#log .rx { color: var(--ok-on-log); }
+#log .er { color: var(--err-on-log); }
+#log .ev { color: var(--warn-on-log); }
 
 .empty { text-align: center; color: var(--muted); padding: 22px 10px; font-size: 13px; }
 .empty .icon { display: block; margin: 0 auto 10px; opacity: .5; }
@@ -728,11 +743,13 @@ details[open] > summary::before { content: '▾'; }
   letter-spacing: .02em; text-transform: none;
 }
 .tabbar .tab .icon { color: inherit; width: 21px; height: 21px; }
-.tabbar .tab.active { color: var(--accent); }
+/* Selected: the accent, and weight. Colour alone is not a state, and it is the
+   one thing a user who cannot separate vermilion from brown would lose. */
+.tabbar .tab.active { color: var(--accent); font-weight: 600; }
 /* The tab you came from, while a header page (Logs or Settings) is open. Dimmer
    than .active, because it is where you were, not where you are. */
 .tabbar .tab.origin { color: var(--text-2); }
-#gearBtn.on, #logsBtn.on { color: var(--accent-hi); border-color: var(--accent-line); background: var(--accent-bg); }
+#gearBtn.on, #logsBtn.on { color: var(--accent-fg); border-color: var(--accent-line); background: var(--accent-bg); }
 
 /* ── the hub ─────────────────────────────────────────────────────────────────
    Quick actions are the same jumps as the bar, for the thumb that is already
@@ -759,7 +776,7 @@ details[open] > summary::before { content: '▾'; }
 }
 .srow .schev { display: flex; color: var(--dim); }
 .srow.on { border-color: var(--accent-line); background: var(--accent-bg); }
-.srow.on .sicon, .srow.on .ssub { color: var(--accent-hi); }
+.srow.on .sicon, .srow.on .ssub { color: var(--accent-fg); }
 
 /* ── the bridge read-out, on Home ─────────────────────────────────────────────
    A dot, the host, and what the bridge answered. The dot is the only thing here
@@ -792,7 +809,7 @@ details.atk[open] .atkchev { transform: rotate(180deg); }
 /* A half-built attack wears its own badge: not green (which would read as done) and
    not the neutral grey of "blocked" (which is about the radio, not the firmware). */
 .atk.partial { border-left-color: var(--accent); }
-.atkstate.partial { color: var(--accent-hi); border-color: var(--accent-line); background: var(--accent-bg); }
+.atkstate.partial { color: var(--accent-fg); border-color: var(--accent-line); background: var(--accent-bg); }
 
 /* Aim: the address takes the room, the channel is a number. Top-aligned so the two
    inputs share a line even if a label ever wraps again. */

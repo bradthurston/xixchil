@@ -548,6 +548,68 @@ ok(/@media \(prefers-reduced-motion: reduce\)/.test(css),
 ok(!/xixchil-hybrid-v2|xixchil-hybrid-v2\(1\)/.test(css + html + js),
    'the prototype is not referenced by anything that ships');
 
+// Contrast. The palette's own values are the design, but a palette is not a
+// licence to ship unreadable text, so every pairing the sheet actually paints is
+// computed here — not eyeballed. This is the check that caught the top note
+// (--accent-fg on --accent-bg) at 1.12:1 on the Paper ground, and the dim tier
+// at 2.60:1 on an Ink panel.
+const tokens = (block) => {
+  const t = {};
+  for (const m of block.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)) t[m[1]] = m[2].trim();
+  return t;
+};
+const T = { ink: tokens(ink), paper: tokens(paper) };
+const resolveTok = (theme, name, depth = 0) => {
+  const v = T[theme][name];
+  if (v && v.startsWith('var(') && depth < 3) return resolveTok(theme, v.slice(4).split(')')[0].trim(), depth + 1);
+  return v;
+};
+const toHex = (v) => {
+  if (!v) return null;
+  if (v.startsWith('#')) return v.length === 4 ? '#' + [...v.slice(1)].map((c) => c + c).join('') : v;
+  const m = v.match(/rgba?\(([^)]*)\)/);
+  if (m) return '#' + m[1].split(',').slice(0, 3).map((n) => Number(parseFloat(n)).toString(16).padStart(2, '0')).join('');
+  return null;
+};
+const relLum = (hex) => {
+  const c = [1, 3, 5].map((i) => {
+    const v = parseInt(hex.slice(i, i + 2), 16) / 255;
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+};
+const contrast = (theme, fg, bg) => {
+  const a = toHex(resolveTok(theme, fg)), b = toHex(resolveTok(theme, bg));
+  if (!a || !b) return null;
+  const la = relLum(a), lb = relLum(b);
+  return Math.round(((Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)) * 100) / 100;
+};
+// Every pairing here is one the sheet paints: body copy on each ground, the
+// on-ground variants, the status colours, type on a tinted accent surface, and
+// the dim tier. 4.5:1 is the bar for the smallest text any of them carries.
+const PAIRS = [
+  ['--fg', '--bg'], ['--fg', '--panel'], ['--muted-on-bg', '--bg'], ['--muted', '--panel'],
+  ['--ok-on-bg', '--bg'], ['--green', '--panel'], ['--accent', '--bg'], ['--accent', '--panel'],
+  ['--accent-hi', '--bg'], ['--accent-hi', '--log-bg'], ['--accent-fg', '--accent-bg'],
+  ['--on-accent', '--accent'], ['--text-2', '--panel'], ['--dim', '--panel'], ['--dim', '--log-bg'],
+  ['--log-fg', '--log-bg'], ['--ok-on-log', '--log-bg'], ['--err-on-log', '--log-bg'], ['--warn-on-log', '--log-bg'],
+];
+for (const theme of ['ink', 'paper']) {
+  const fails = [];
+  for (const [fg, bg] of PAIRS) {
+    const r = contrast(theme, fg, bg);
+    if (r === null || r < 4.5) fails.push(`${fg} on ${bg} = ${r}:1`);
+  }
+  ok(fails.length === 0, `${theme}: all ${PAIRS.length} painted pairings clear AA${fails.length ? ' — ' + fails.join(', ') : ''}`);
+}
+// The one pairing that must NOT be reopened: near-white type on the pale paper
+// tint measured 1.12:1 and read as blank.
+ok(contrast('paper', '--accent-fg', '--accent-bg') >= 4.5 &&
+   contrast('ink', '--accent-fg', '--accent-bg') >= 4.5,
+   'type on a tinted accent surface is legible on both grounds');
+ok(/\.tabbar \.tab\.active\s*\{[^}]*font-weight:\s*600/.test(css),
+   'the selected tab gains weight, not only hue');
+
 // ── result ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${failures.length ? 'FAIL' : 'PASS'} — ${pass} checks passed, ${failures.length} failed`);
