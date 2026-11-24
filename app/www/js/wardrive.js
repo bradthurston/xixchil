@@ -28,6 +28,7 @@
 
 import { parseChunk } from './analyze.js';
 import { roles, parseEapolKey, extractHandshakes } from './crack.js';
+import { bytesToBase64 } from './transport.js';
 
 (function () {
   'use strict';
@@ -84,6 +85,7 @@ import { roles, parseEapolKey, extractHandshakes } from './crack.js';
   let $wardriveBtn = null;
   let $wardriveStatus = null;
   let $wardriveChannel = null;
+  let $wardriveDeauth = null;     // the card's "Send deauths" box; off = listen only
   let $gpsStatus = null;
   let $wFrames = null;
   let $wAPs = null;
@@ -112,6 +114,7 @@ import { roles, parseEapolKey, extractHandshakes } from './crack.js';
     $wardriveBtn = document.getElementById('wardriveBtn');
     $wardriveStatus = document.getElementById('wardriveStatus');
     $wardriveChannel = document.getElementById('wardriveChannel');
+    $wardriveDeauth = document.getElementById('wardriveDeauth');
     $gpsStatus = document.getElementById('gpsStatus');
     $wFrames = document.getElementById('wFrames');
     $wAPs = document.getElementById('wAPs');
@@ -147,6 +150,19 @@ import { roles, parseEapolKey, extractHandshakes } from './crack.js';
     return Number.isFinite(v) && v >= 1 && v <= 196 ? v : 6;
   }
 
+  /**
+   * May wardrive transmit deauthentication frames?
+   *
+   * The one control that decides whether this mode listens or interferes.
+   * Read LIVE from the card rather than latched at start(), so clearing the box
+   * mid-walk stops the transmitting immediately instead of at the next session.
+   * Defaults to ON when the element is absent, so a build without the checkbox
+   * keeps the behaviour it had before the switch existed.
+   */
+  function deauthEnabled() {
+    return $wardriveDeauth ? $wardriveDeauth.checked : true;
+  }
+
   /** GPS fixes arrive with the position object as their only argument. */
   function onGpsUpdate() {
     updateUI();
@@ -162,6 +178,9 @@ import { roles, parseEapolKey, extractHandshakes } from './crack.js';
     channel = readChannel();
     resetStats();
     logWardrive('Starting wardrive on channel ' + channel + '…');
+    logWardrive(deauthEnabled()
+      ? 'Deauths ON — clients will be kicked to force a handshake.'
+      : 'Deauths OFF — listening only. Nothing is transmitted.');
 
     try {
       // 1. GPS first: every stored handshake is tagged with where it was found.
@@ -402,8 +421,13 @@ import { roles, parseEapolKey, extractHandshakes } from './crack.js';
     ap.frames++;
     if (!ap.clients.has(client)) {
       ap.clients.add(client);
-      deauthQueue.push({ bssid, client });
-      logWardrive('Target ' + client + ' on ' + bssid);
+      // Only queue when we are allowed to act on it. Queuing regardless would
+      // grow the list unbounded across a long walk, and every stale target
+      // would then fire the moment the box was ticked.
+      if (deauthEnabled()) {
+        deauthQueue.push({ bssid, client });
+        logWardrive('Target ' + client + ' on ' + bssid);
+      }
     }
 
     // ── EAPOL: the whole point ────────────────────────────────────────────────
@@ -505,6 +529,9 @@ import { roles, parseEapolKey, extractHandshakes } from './crack.js';
   // ── auto deauth ──────────────────────────────────────────────────────────────
 
   async function autoDeauth() {
+    // The gate. Checked here, not only at queue time, so ticking or clearing the
+    // box takes effect on the very next cycle.
+    if (!deauthEnabled()) return;
     if (deauthQueue.length === 0) return;
 
     const now = Date.now();
@@ -657,19 +684,106 @@ import { roles, parseEapolKey, extractHandshakes } from './crack.js';
       setTimeout(() => {
         const jsonBtn = document.getElementById('exportJSONBtn');
         if (jsonBtn) {
-          jsonBtn.addEventListener('click', () => {
-            const data = _hashStore.exportJSON(sessionId);
-            downloadText(data, 'wardrive-' + sessionId + '.json', 'application/json');
-          });
+          jsonBtn.addEventListener('click', () => { exportSession(sessionId, 'json').catch(() => {}); });
         }
         const hcBtn = document.getElementById('export22000Btn');
         if (hcBtn) {
-          hcBtn.addEventListener('click', () => {
-            const data = _hashStore.export22000(sessionId);
-            downloadText(data, 'wardrive-' + sessionId + '.22000', 'text/plain');
-          });
+          hcBtn.addEventListener('click', () => { exportSession(sessionId, '22000').catch(() => {}); });
         }
       }, 50);
+    }
+  }
+
+  // ── export to a file on the phone ─────────────────────────────────────────────
+  //
+  // These exports used to be a blob URL + `<a download>` click — a browser
+  // mechanism. The Android app sets no DownloadListener, and a stock Capacitor
+  // WebView ignores those clicks, so pressing Export did nothing at all: no file,
+  // no error, no dialog. The data was in localStorage the whole time with no way
+  // out. Write through the Filesystem plugin instead, exactly as capture.js does
+  // for pcaps (see Rule 14 — a string without `encoding` must be base64).
+
+  function filesystem() {
+    const p = window.Capacitor?.Plugins?.Filesystem;
+    if (!p) throw new Error('Filesystem plugin not available (not running in the app?)');
+    return p;
+  }
+
+  // Ordered: the folder Brad asked for first, then a known-good fallback, then
+  // app-private storage so an export never vanishes entirely. Android 11+ blocks
+  // arbitrary writes to shared storage, so EXTERNAL_STORAGE may be refused here —
+  // that is what the next attempt is for, and the log line names where it landed.
+  const EXPORT_DIRS = [
+    { directory: 'EXTERNAL_STORAGE', path: 'Xixchil/' },  // /sdcard/Xixchil/
+    { directory: 'DOCUMENTS', path: 'Xixchil/' },         // /sdcard/Documents/Xixchil/
+    { directory: 'DATA', path: '' },                      // app-private, always writable
+  ];
+
+  async function writeExportFile(text, filename) {
+    const data = bytesToBase64(new TextEncoder().encode(text));
+    let lastErr = null;
+    for (const d of EXPORT_DIRS) {
+      try {
+        const res = await filesystem().writeFile({
+          path: d.path + filename,
+          data,
+          directory: d.directory,
+          recursive: true,
+        });
+        return res?.uri || (d.directory + '/' + d.path + filename);
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw new Error('could not write ' + filename + ': ' + (lastErr?.message || 'unknown error'));
+  }
+
+  /**
+   * A filename a human can read.
+   *
+   * The session id is `Date.now().toString(36)` (hashstore.js `addHash`) — a
+   * base-36 epoch ms, which is why exports arrived named `wardrive-mwphghvd`:
+   * that string is not the SSID and not random, it is 2026-11-20 15:20:22.
+   * Turn it back into the date the session started instead of shipping the
+   * gibberish. Anything that is not a plausible base-36 timestamp (a renamed or
+   * imported session id) keeps its own name, date-prefixed, so a filename never
+   * loses the part that identifies it.
+   */
+  function exportFilename(sessionId, isJSON) {
+    const ext = isJSON ? '.json' : '.22000';
+    const p = (n) => String(n).padStart(2, '0');
+    // parseInt('z', 36) etc. is a valid number but nonsense as a date, hence the range.
+    const ms = /^[0-9a-z]{4,}$/i.test(sessionId) ? parseInt(sessionId, 36) : NaN;
+    if (Number.isFinite(ms) && ms > 1577836800000 && ms < 4102444800000) { // 2020..2100
+      const d = new Date(ms);
+      return 'wardrive-' + d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+             '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + ext;
+    }
+    return 'wardrive-' + sessionId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 40) + ext;
+  }
+
+  // Export one session to a file. kind: 'json' (map rendering) | '22000' (hashcat).
+  async function exportSession(sessionId, kind) {
+    if (!_hashStore || !sessionId) throw new Error('no session to export');
+    const isJSON = kind !== '22000';
+    const text = isJSON ? _hashStore.exportJSON(sessionId) : _hashStore.export22000(sessionId);
+    if (!text) throw new Error('nothing to export for session ' + sessionId);
+    const filename = exportFilename(sessionId, isJSON);
+
+    // Outside the app (desktop dev in a browser) there is no filesystem plugin;
+    // fall back to the download the old code used.
+    if (!window.Capacitor?.Plugins?.Filesystem) {
+      downloadText(text, filename, isJSON ? 'application/json' : 'text/plain');
+      return 'browser download';
+    }
+
+    try {
+      const where = await writeExportFile(text, filename);
+      logWardrive('Saved ' + filename + ' → ' + where);
+      return where;
+    } catch (e) {
+      logWardrive('Export failed: ' + e.message);
+      throw e;
     }
   }
 
@@ -753,5 +867,6 @@ import { roles, parseEapolKey, extractHandshakes } from './crack.js';
     getState,
     onSegmentChunk,
     getStats,
+    exportSession,
   };
 })();

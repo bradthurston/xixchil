@@ -100,9 +100,15 @@ ok(nullNoNote.length === 0,
    'an attack with no firmware command says so plainly',
    nullNoNote.map((a) => `${a.id}: ${a.firmwareNote}`).join('\n'));
 
-const cmdWithoutTransmit = ATTACKS.filter((a) => a.firmware && !a.needs.includes(NEED.TRANSMIT));
+// A command that leaves through the ESP32's WiFi radio has to be gated on transmit.
+// NRF_SEND is not one of those: it goes out the nRF24 dongle, a second radio that
+// has nothing to do with the WiFi TX path, so the transmit gate would be wrong here.
+// Add to this set only when a command genuinely does not use the WiFi radio.
+const OFF_RADIO = new Set(['NRF_SEND']);
+const cmdWithoutTransmit = ATTACKS.filter(
+  (a) => a.firmware && !a.needs.includes(NEED.TRANSMIT) && !OFF_RADIO.has(a.firmware));
 ok(cmdWithoutTransmit.length === 0,
-   'every attack that names a firmware command is gated on transmit',
+   'every attack that names a firmware command is gated on transmit (or rides another radio)',
    cmdWithoutTransmit.map((a) => a.id).join(', '));
 
 // The panel renders these strings through escapeHtml, which is correct and also
@@ -129,10 +135,19 @@ ok(badBuilt.length === 0,
 // of Rule 23: a frame builder landing must not make an attack look runnable.
 // An attack whose firmware half is missing is 'partial'. Today every attack has
 // a firmware command. If a 'partial' ever appears again, it points at real work.
+// The set of partial attacks is pinned rather than assumed empty: a NEW partial is
+// a decision someone has to make here, and a pinned one that went ready has to be
+// removed from the list below (leaving it would hide the fact that it landed).
+const PARTIAL_OK = new Set(['mousejack']); // NRF_SEND unproven on the nRF24 lane
 const halfBuilt = ATTACKS.filter((a) => a.built === 'partial');
-ok(halfBuilt.length === 0,
-   'no attack is partial — all four have firmware commands behind them',
-   halfBuilt.map((a) => a.id).join(', '));
+ok(halfBuilt.every((a) => PARTIAL_OK.has(a.id)),
+   'no new attack reads as partial — every partial one is pinned here',
+   halfBuilt.map((a) => a.id).filter((id) => !PARTIAL_OK.has(id)).join(', '));
+ok([...PARTIAL_OK].every((id) => halfBuilt.some((a) => a.id === id)),
+   'every pinned partial attack is still partial — if its firmware landed, drop it from PARTIAL_OK');
+// The UI shows the build state as a label, so a partial attack has to show up as
+// exactly that word — 'ready' there would be the same lie in a smaller font.
+ok(halfBuilt.every((a) => a.built !== 'ready'), 'a partial attack never labels itself ready');
 
 // The crack attack must not claim to need the radio — it is offline work, and
 // gating it on transmit would hide the one attack that actually runs.
@@ -200,7 +215,14 @@ ok(wrong === 0, 'readiness and blockers match the declared needs everywhere',
 
 // Nothing can be runnable with nothing available — the floor case.
 const empty = { hasCapture: false, hasHandshake: false, canTransmit: false, bridgeReachable: false };
-ok(runnable(empty).length === 0, 'with nothing available, nothing is runnable');
+// The floor case. MouseJack is the exception and it is an honest one: its radio is
+// the USB dongle, which these four context flags do not model at all, so nothing in
+// `empty` can block it. The card itself says it needs the dongle. Every other attack
+// has to be blocked, or the flags are not being read.
+const emptyFloor = runnable(empty).map((a) => a.id);
+ok(emptyFloor.length === 1 && emptyFloor[0] === 'mousejack',
+   'with nothing available, only the dongle attack (which the flags cannot gate) is runnable',
+   emptyFloor.join(', '));
 
 // The ceiling case. Note what "everything available" now means: every context
 // flag is true, and it is STILL not all four. Karma and Mana need code that has
@@ -218,11 +240,14 @@ ok(ATTACKS.every((a) => evaluate(a, full).ready),
 
 // And the real-world case this stage ships in: our firmware cannot transmit.
 const shipped = { hasCapture: true, hasHandshake: true, canTransmit: false, bridgeReachable: true };
-const runnableNow = runnable(shipped);
-ok(runnableNow.length === 1 && runnableNow[0].id === 'crack',
-   'with no transmit path, crack is the only runnable attack',
-   runnableNow.map((a) => a.id).join(', '));
-ok(blockedOnTransmit(shipped).length === ATTACKS.length - 1,
+// With no WiFi transmit path, what still runs is exactly the pair that never needed
+// it: crack, because the bridge does the work, and mousejack, because it transmits
+// on a separate nRF24 radio. Order comes from the library, so compare as sets.
+const runnableNow = runnable(shipped).map((a) => a.id).sort();
+ok(runnableNow.length === 2 && runnableNow.includes('crack') && runnableNow.includes('mousejack'),
+   'with no WiFi transmit path, crack and mousejack are the only runnable attacks',
+   runnableNow.join(', '));
+ok(blockedOnTransmit(shipped).length === ATTACKS.length - 2,
    'the other attacks are grouped as blocked on transmit');
 
 // The state this stage ships in NOW: our firmware gained a TX path (0.3.0-tx)
@@ -231,8 +256,8 @@ ok(blockedOnTransmit(shipped).length === ATTACKS.length - 1,
 // was set carelessly — both worth a red check.
 const withTx = { hasCapture: true, hasHandshake: true, canTransmit: true, bridgeReachable: true };
 const runnableTx = runnable(withTx).map((a) => a.id).sort();
-ok(runnableTx.join(',') === 'crack,handshake,karma,mana',
-   'with a transmit path and lure firmware, all four attacks are runnable',
+ok(runnableTx.length === ATTACKS.length,
+   `with a transmit path and lure firmware, all ${ATTACKS.length} attacks are runnable`,
    runnableTx.join(', '));
 // Karma and Mana are no longer blocked — they have real firmware now.
 ok(blockedOnTransmit(withTx).length === 0,

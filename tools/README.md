@@ -106,3 +106,8 @@ Node decides module type from the file extension plus the nearest `package.json`
 the browser loads the real `.js` as a module regardless. Copying at run time is
 the cheap way to test the exact browser source under Node without restructuring
 the app.
+- `verify_logitacker.mjs` — the LOGITacker (nRF52840) text-shell lane: ANSI/prompt
+  splitting, the `devices` table, `script -h`, echo handling, and the rule that an
+  `<info>`-only gap is never a reply. Fixture is bytes captured off the device.
+- `webview_eval.mjs` — run JS inside the running app's WebView over CDP (wireless).
+  `node tools/webview_eval.mjs 'document.title'` or pass a file of JS.

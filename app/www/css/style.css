@@ -155,7 +155,7 @@ header .wordmark { height: 16.75px; width: auto; max-width: 100%; flex: none; fi
 .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 
 /* ── main ───────────────────────────────────────────────── */
-main { flex: 1; overflow-y: auto; padding: var(--pad); padding-bottom: 90px; }
+main { flex: 1; overflow-y: auto; padding: var(--pad); padding-bottom: var(--pad); }
 
 .card {
   background: var(--surface);
@@ -246,7 +246,7 @@ button.danger  { background: var(--danger-bg); border-color: var(--danger-line);
   font-size: 11px; text-transform: uppercase; letter-spacing: .7px;
   color: var(--muted); font-weight: 650;
 }
-.field select, .field input {
+.field select, .field input, #dongleCard select, #dongleCard input {
   font: inherit; font-weight: 600; color: var(--text);
   background: var(--surface-2); border: 1px solid var(--line);
   border-radius: 10px; padding: 10px 12px; width: 100%;
@@ -254,9 +254,9 @@ button.danger  { background: var(--danger-bg); border-color: var(--danger-line);
 }
 .field input { font-weight: 500; font-size: 13px; }
 .field input::placeholder { color: var(--dim); font-weight: 400; }
-.field select:disabled, .field input:disabled { opacity: .45; }
+.field select:disabled, .field input:disabled, #dongleCard select:disabled, #dongleCard input:disabled { opacity: .45; }
 /* The seal red, put to work: it marks where you are. */
-.field select:focus, .field input:focus {
+.field select:focus, .field input:focus, #dongleCard select:focus, #dongleCard input:focus {
   outline: none; border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-bg);
 }
@@ -585,3 +585,98 @@ button:focus-visible, .device:focus-visible, .stage:focus-visible {
   font-size: 10.5px; color: var(--muted);
   margin-top: 6px; text-align: center;
 }
+
+/* ── dongle card layout ───────────────────────────────────────────────────────
+   That card has a lot of controls and only a few of them are used on the way in.
+   Grouping them under section heads and folding the hand tools into a <details>
+   keeps the everyday path to three buttons instead of nine. */
+.hint {
+  font-size: 11.5px; color: var(--muted); line-height: 1.45; margin: 6px 0 0;
+}
+/* Rows whose buttons should share the width evenly. */
+.row.even > button { flex: 1 1 0; min-width: 0; padding: 10px 8px; }
+details { margin-top: 4px; }
+details > summary {
+  cursor: pointer; list-style: none; padding: 9px 0;
+  font-size: 12px; text-transform: uppercase; letter-spacing: .8px;
+  color: var(--muted); font-weight: 650;
+  display: flex; align-items: center; gap: 7px;
+}
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: '▸'; font-size: 10px; }
+details[open] > summary::before { content: '▾'; }
+
+/* ── the sections ─────────────────────────────────────────────────────────────
+   A hub and five sections, not one long scroll. Only the section you picked is
+   in the flow — the rest are off, not scrolled past. A hidden panel is also
+   never measured: that is the trap that once made a fold look broken when it
+   was collapsing correctly all along (Chrome hides a <details> body through a
+   shadow slot, so it measures 36px closed and 254px open, never zero).      */
+.page { display: none; }
+.page.active { display: block; }
+
+/* ── the bottom bar ──────────────────────────────────────────────────────────
+   One tab per section, built in app.js from PAGE_TABS, so a section cannot
+   exist without a way to reach it and a tab cannot point at nothing.        */
+.tabbar {
+  flex: 0 0 auto;
+  display: flex;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.tabbar .tab {
+  flex: 1 1 0; min-width: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 9px 2px 8px;
+  border: 0; border-radius: 0; background: transparent;
+  color: var(--muted); font-size: 10.5px; font-weight: 600;
+  letter-spacing: .02em; text-transform: none;
+}
+.tabbar .tab .icon { color: inherit; }
+.tabbar .tab.active { color: var(--accent); }
+#gearBtn.on { color: var(--accent-hi); border-color: var(--accent-line); background: var(--accent-bg); }
+
+/* ── the hub ─────────────────────────────────────────────────────────────────
+   Quick actions are the same jumps as the bar, for the thumb that is already
+   at the top of the screen. The tiles say what each section is doing right
+   now, in the same words the panels themselves use — no second vocabulary.  */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-size: 12px; padding: 7px 11px; gap: 6px; }
+.modgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 4px; }
+.mod {
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start;
+  gap: 1px; text-align: left; padding: 9px 10px; line-height: 1.25;
+}
+.mod .modicon { display: flex; color: var(--muted); }
+.mod .modname { font-size: 12.5px; font-weight: 650; }
+.mod .modsub  { font-size: 11px; font-weight: 500; color: var(--muted); }
+.mod.on { border-color: var(--accent-line); background: var(--accent-bg); }
+.mod.on .modicon, .mod.on .modsub { color: var(--accent-hi); }
+
+/* The fold in the MouseJack panel and the dongle's hand tools. */
+#mjAdvanced { margin-top: 10px; }
+#mjAdvanced > summary { padding: 6px 0; }
+
+/* ── attack rows ──────────────────────────────────────────────────────────────
+   Each attack is a row you open. The global <details> marker is suppressed here
+   because the row already carries a state badge; the chevron says the rest. */
+details.atk > summary { list-style: none; padding: 0; align-items: flex-start; }
+details.atk > summary::-webkit-details-marker { display: none; }
+details.atk > summary::before,
+details.atk[open] > summary::before { content: none; }
+.atkchev { flex: none; color: var(--dim); display: flex; align-items: center; align-self: center; }
+details.atk[open] > summary { margin-bottom: 9px; }
+details.atk[open] .atkchev { transform: rotate(180deg); }
+.atkbody { min-width: 0; }
+
+/* A half-built attack wears its own badge: not green (which would read as done) and
+   not the neutral grey of "blocked" (which is about the radio, not the firmware). */
+.atk.partial { border-left-color: var(--accent); }
+.atkstate.partial { color: var(--accent-hi); border-color: var(--accent-line); background: var(--accent-bg); }
+
+/* Aim: the address takes the room, the channel is a number. Top-aligned so the two
+   inputs share a line even if a label ever wraps again. */
+.fields.aim { align-items: flex-start; }
+.fields.aim .field:first-child { flex: 1 1 auto; min-width: 0; }
+.fields.aim .field:last-child { flex: 0 0 auto; }

@@ -23,6 +23,11 @@
 // (portalArm, at the bottom of this file), and the gate's failure mode is
 // still "it did nothing".
 
+// The band plan is a sibling pure module, kept pure for the same reason this
+// file is: the page has to be able to say "that is not a channel" with no device
+// attached (see the note at the top of band.js).
+import { channelOk, channelHint, bandsOf } from './band.js';
+
 export const DHCP_MAGIC_COOKIE = 0x63825363;
 export const DHCP_END = 255;
 
@@ -421,8 +426,8 @@ export function portalArm({
   if (cleanSsid.length > 32) problems.push('ssid over 32 octets (802.11 §9.4.2.2)');
 
   const ch = Number(channel);
-  if (!Number.isInteger(ch) || ch < 1 || ch > 14) {
-    problems.push('channel must be an integer 1..14 (the S3 is 2.4 GHz only)');
+  if (!channelOk(ch)) {
+    problems.push(`${channelHint()}, got ${channel}`);
   }
   if (bssid !== undefined && bssid !== null && bssid !== '' && !/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(String(bssid))) {
     problems.push('bssid must be xx:xx:xx:xx:xx:xx');
@@ -481,14 +486,27 @@ const WHY_NOT = {
   9: 'OWE (enhanced open) — no PSK at all',
 };
 
-/** Why this AP cannot be cloned into a crackable twin, or null if it can. */
-export function twinRejectReason(ap) {
+/**
+ * Why this AP cannot be cloned into a crackable twin, or null if it can.
+ *
+ * `bands` is the attached board's own report (`status.bands`: "2.4" or "2.4+5")
+ * and defaults to 2.4 GHz-only — the conservative answer for a caller that has
+ * not asked the device. The refusal names the board's *band* rather than a
+ * particular chip: "the S3" was the old wording, and the board stopped being an
+ * S3 (see the ESP32-C5 port notes).
+ */
+export function twinRejectReason(ap, bands = '2.4') {
   if (!ap) return 'no such AP';
   const auth = Number(ap.auth);
   if (Number.isInteger(auth) && WHY_NOT[auth]) return WHY_NOT[auth];
   const ch = Number(ap.ch);
-  if (!Number.isInteger(ch) || ch < 1 || ch > 14) {
-    return `channel ${ap.ch} is out of the S3's 2.4 GHz range (1..14) — a twin must sit on the target's own channel, one radio`;
+  if (!channelOk(ch)) {
+    return `channel ${ap.ch} is not a channel either band defines (${channelHint()}) — a twin must sit on the target's own channel, one radio`;
+  }
+  // A twin has to sit on the target's own channel, and one radio cannot be in
+  // two bands at once — so a 5 GHz target needs a board that can tune 5 GHz.
+  if (ch > 14 && !bandsOf({ bands }).includes('5')) {
+    return `channel ${ch} is 5 GHz and the attached board reports only ${bands} GHz — a twin must sit on the target's own channel, and one radio cannot be in two bands at once`;
   }
   const bssid = String(ap.bssid || '');
   if (!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(bssid)) return `bssid ${JSON.stringify(ap.bssid)} is not a MAC`;
@@ -503,9 +521,9 @@ export function twinRejectReason(ap) {
  * cannot see clients — so RSSI is a *proxy* for "this one is worth the effort",
  * not evidence that anyone is home. Said out loud rather than implied.
  */
-export function rankTwinCandidates(aps, { onlyCloneable = false } = {}) {
+export function rankTwinCandidates(aps, { onlyCloneable = false, bands = '2.4' } = {}) {
   const list = (Array.isArray(aps) ? aps : []).map((ap) => {
-    const why = twinRejectReason(ap);
+    const why = twinRejectReason(ap, bands);
     return {
       ssid: String(ap.ssid ?? ''),
       bssid: String(ap.bssid ?? '').toLowerCase(),
@@ -530,7 +548,7 @@ export function rankTwinCandidates(aps, { onlyCloneable = false } = {}) {
  * chosen. The twin's channel is forced to the target's: one radio, so the AP and
  * the capture cannot sit on different channels.
  */
-export function selectTwinTarget(aps, { ssid, bssid } = {}) {
+export function selectTwinTarget(aps, { ssid, bssid, bands = '2.4' } = {}) {
   if (!ssid && !bssid) {
     return { ok: false, reason: 'name the target: pass { ssid } or { bssid }. This ranks candidates; it does not pick one.' };
   }
@@ -549,12 +567,12 @@ export function selectTwinTarget(aps, { ssid, bssid } = {}) {
     return {
       ok: false,
       reason: `${matches.length} APs share that SSID — give a bssid`,
-      candidates: rankTwinCandidates(matches),
+      candidates: rankTwinCandidates(matches, { bands }),
     };
   }
 
   const target = matches[0];
-  const why = twinRejectReason(target);
+  const why = twinRejectReason(target, bands);
   if (why) return { ok: false, reason: why, candidate: rankTwinCandidates([target])[0] };
 
   return {

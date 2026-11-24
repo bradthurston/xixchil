@@ -32,7 +32,12 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const work = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'portal-'));
 
-writeFileSync(join(work, 'portal.mjs'), readFileSync(join(here, '..', 'app', 'www', 'js', 'portal.js')));
+// portal.js is browser ESM and imports band.js, so stage both as .mjs — the
+// staged copy's import has to be re-pointed at the staged band copy.
+writeFileSync(join(work, 'portal.mjs'),
+  readFileSync(join(here, '..', 'app', 'www', 'js', 'portal.js'), 'utf8')
+    .replace(/from '\.\/band\.js'/g, "from './band.mjs'"));
+writeFileSync(join(work, 'band.mjs'), readFileSync(join(here, '..', 'app', 'www', 'js', 'band.js')));
 const P = await import(join(work, 'portal.mjs'));
 
 const {

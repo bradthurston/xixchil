@@ -42,76 +42,183 @@
       </svg>
       <span id="themeName">paper</span>
     </button>
+    <button id="gearBtn" class="pill ghost" style="font-size:11px;padding:3px 9px"
+            title="Settings" aria-label="Settings"></button>
     <button id="resetBtn" class="pill ghost" style="font-size:11px;padding:2px 8px">reset</button>
   </header>
 
   <main>
 
-    <!-- ── connect ─────────────────────────────────────────────── -->
-    <section class="card" id="connectCard">
-      <h2>Device</h2>
-      <div id="deviceList"></div>
-      <button class="block ghost" id="refreshBtn" style="margin-top:10px"></button>
+    <!-- ═══ HOME ════════════════════════════════════════════════════════════
+         The hub. Pick a section from the bar at the bottom; this page is the
+         one that answers "what is connected and what can I do with it". -->
+    <section class="page active" id="page-home">
+
+      <section class="card hidden" id="hubCard">
+        <h2>Quick actions</h2>
+        <div class="chips" id="hubActions"></div>
+        <div class="sechead" id="hubModulesHead">Modules</div>
+        <div class="modgrid" id="hubModules"></div>
+      </section>
+
+        <section class="card" id="connectCard">
+        <h2>Device</h2>
+        <div id="deviceList"></div>
+        <button class="block ghost" id="refreshBtn" style="margin-top:10px"></button>
+      </section>
+
+        <section class="card hidden" id="consoleCard">
+        <h2>Link</h2>
+        <div id="deviceInfo"></div>
+        <div class="row" style="margin-top:12px">
+          <button id="pingBtn"></button>
+          <button class="ghost" id="linkBtn"></button>
+        </div>
+      </section>
     </section>
 
-    <!-- ── console ─────────────────────────────────────────────── -->
-    <section class="card hidden" id="consoleCard">
-      <h2>Link</h2>
-      <div id="deviceInfo"></div>
-      <div class="row" style="margin-top:12px">
-        <button id="pingBtn"></button>
-        <button class="ghost" id="linkBtn"></button>
-      </div>
+    <!-- ═══ CAPTURE ═════════════════════════════════════════════════════════
+         Everything that listens: the staged flow, the channel analyzer, the
+         wardrive. Nothing on this page transmits. -->
+    <section class="page" id="page-capture">
+
+        <section class="card hidden" id="consoleCard2">
+        <h2>Flow</h2>
+        <div class="stages" id="stages"></div>
+      </section>
+
+        <section class="card hidden" id="consoleCard3">
+        <div id="stagePanel"></div>
+      </section>
+
+      <section class="card" id="analyzerCard">
+        <h2>Channel analyzer</h2>
+        <div id="analyzerPanel"></div>
+      </section>
+
+        <section class="card hidden" id="wardriveCard">
+        <h2>Wardrive</h2>
+        <div class="wrow">Channel <input id="wardriveChannel" type="number" min="1" max="196"
+          value="6" style="width:64px;margin-left:6px;"></div>
+        <div class="wrow"><label><input id="wardriveDeauth" type="checkbox" checked
+          style="margin-right:6px;vertical-align:middle;">Send deauths (unchecked = listen only)</label></div>
+        <button id="wardriveBtn">Start Wardrive</button>
+        <div id="wardriveStatus" class="hidden">
+          <div class="wrow">GPS: <span id="gpsStatus">no fix</span></div>
+          <div class="wrow">Frames: <span id="wFrames">0</span></div>
+          <div class="wrow">APs: <span id="wAPs">0</span></div>
+          <div class="wrow">Deauths: <span id="wDeauths">0</span></div>
+          <div class="wrow">Handshakes: <span id="wHandshakes">0</span></div>
+          <div class="wrow">Duration: <span id="wDuration">0s</span></div>
+        </div>
+        <div id="wardriveLog" style="max-height:100px; overflow-y:auto; font-size:11px; margin-top:10px;"></div>
+      </section>
     </section>
 
-    <!-- ── staged flow ─────────────────────────────────────────── -->
-    <section class="card hidden" id="consoleCard2">
-      <h2>Flow</h2>
-      <div class="stages" id="stages"></div>
+    <!-- ═══ ATTACKS ═════════════════════════════════════════════════════════
+         The attack panel, and the MouseJack dongle: two independent radios that
+         both aim at a target — one over WiFi, one over nRF24. -->
+    <section class="page" id="page-attacks">
+
+      <section class="card">
+        <div id="attackPanel"></div>
+      </section>
+
+        <section class="card" id="dongleCard">
+        <h2>MouseJack dongle</h2>
+        <div class="wrow" style="border:0;padding:0 0 4px;">nRF52840 · LOGITacker · <span id="dongleStatus">not connected</span></div>
+        <p class="hint">Plug it in, tap Find dongle, then tap the dongle row. Once it is linked,
+          Scan what it hears lists the devices it can see.</p>
+        <button id="dongleScan"></button>
+        <div id="dongleDevices"></div>
+        <button id="dongleQuickScan" class="primary"></button>
+        <div id="dongleTable"></div>
+
+        <div class="sechead">Send a command</div>
+        <p class="pnlnote">One command per send. The dongle takes them one at a time, so there is
+          nothing to chain — pick or type one, Send, read the answer.</p>
+        <select id="dongleCmdPick"></select>
+        <div class="row" style="margin-top:8px;">
+          <input id="dongleCmd" type="text" placeholder="pick one above, or type it here" style="flex:1 1 auto;min-width:0;">
+          <button id="dongleSend"></button>
+        </div>
+
+        <div class="sechead">Injection script</div>
+        <select id="mjScriptPick"></select>
+        <div class="row" style="margin-top:8px;">
+          <input id="mjScriptText" type="text" list="mjKeyList"
+                 placeholder="text to type — some scripts need it" style="flex:1 1 auto;min-width:0;">
+          <button id="mjScriptBuild"></button>
+        </div>
+        <datalist id="mjKeyList"></datalist>
+
+        <details id="mjManual">
+          <summary>Build one by hand</summary>
+          <div class="row even">
+            <button id="mjScriptString"></button>
+            <button id="mjScriptPress"></button>
+            <button id="mjScriptDelay"></button>
+          </div>
+          <div class="row even" style="margin-top:8px;">
+            <button id="mjScriptShow"></button>
+            <button id="mjScriptClear"></button>
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <input id="mjScriptName" type="text" placeholder="name to save it as" style="flex:1 1 auto;min-width:0;">
+            <button id="mjScriptStore"></button>
+          </div>
+        </details>
+
+        <div id="dongleOut" style="max-height:180px; overflow-y:auto; font-family:monospace; font-size:11px; margin-top:10px; white-space:pre-wrap;"></div>
+      </section>
     </section>
 
-    <section class="card hidden" id="consoleCard3">
-      <div id="stagePanel"></div>
+    <!-- ═══ CRACK ═══════════════════════════════════════════════════════════
+         Offline work: a handshake in, a passphrase out. Needs no radio. -->
+    <section class="page" id="page-crack">
+
+        <!-- Deliberately outside the device-gated cards: a handshake can be imported and
+           cracked with no board attached. This is the door another tool's export comes
+           through — NRSuite's portal writes one, and cracking it is this app's half. -->
+        <section class="card" id="importCard">
+        <h2>Import capture</h2>
+        <div class="stagesub">Bring in a handshake from another tool — a .22000 list or a
+          capture file (.pcap / .cap / .pcapng). No device needed; the search runs on the bridge.</div>
+        <input type="file" id="importFile"
+               accept=".22000,.pcap,.cap,.pcapng,.txt,application/octet-stream" hidden>
+        <button class="block" id="importBtn" style="margin-top:10px"></button>
+        <div id="importResult"></div>
+      </section>
+
+      <section class="card">
+        <div id="crackPanel"></div>
+      </section>
     </section>
 
-    <!-- ── import ──────────────────────────────────────────────── -->
-    <!-- Deliberately outside the device-gated cards: a handshake can be imported and
-         cracked with no board attached. This is the door another tool's export comes
-         through — NRSuite's portal writes one, and cracking it is this app's half. -->
-    <section class="card" id="importCard">
-      <h2>Import capture</h2>
-      <div class="stagesub">Bring in a handshake from another tool — a .22000 list or a
-        capture file (.pcap / .cap / .pcapng). No device needed; the search runs on the bridge.</div>
-      <input type="file" id="importFile"
-             accept=".22000,.pcap,.cap,.pcapng,.txt,application/octet-stream" hidden>
-      <button class="block" id="importBtn" style="margin-top:10px"></button>
-      <div id="importResult"></div>
+    <!-- ═══ SETTINGS ════════════════════════════════════════════════════════
+         The gear. Config that is set once and then left alone does not belong
+         in the middle of the working pages. -->
+    <section class="page" id="page-settings">
+      <section class="card">
+        <h2>Settings</h2>
+        <div id="settingsPanel"></div>
+      </section>
     </section>
 
-    <!-- ── wardrive ───────────────────────────────────────────── -->
-    <section class="card hidden" id="wardriveCard">
-      <h2>Wardrive</h2>
-      <div class="wrow">Channel <input id="wardriveChannel" type="number" min="1" max="196"
-        value="6" style="width:64px;margin-left:6px;"></div>
-      <button id="wardriveBtn">Start Wardrive</button>
-      <div id="wardriveStatus" class="hidden">
-        <div class="wrow">GPS: <span id="gpsStatus">no fix</span></div>
-        <div class="wrow">Frames: <span id="wFrames">0</span></div>
-        <div class="wrow">APs: <span id="wAPs">0</span></div>
-        <div class="wrow">Deauths: <span id="wDeauths">0</span></div>
-        <div class="wrow">Handshakes: <span id="wHandshakes">0</span></div>
-        <div class="wrow">Duration: <span id="wDuration">0s</span></div>
-      </div>
-      <div id="wardriveLog" style="max-height:100px; overflow-y:auto; font-size:11px; margin-top:10px;"></div>
-    </section>
-
-    <!-- ── log ─────────────────────────────────────────────────── -->
-    <section class="card">
-      <h2>Trace</h2>
-      <pre id="log"></pre>
+    <!-- ═══ LOGS ════════════════════════════════════════════════════════════
+         The trace. Everything the app did and everything the board said. -->
+    <section class="page" id="page-logs">
+        <section class="card">
+        <h2>Trace</h2>
+        <pre id="log"></pre>
+      </section>
     </section>
 
   </main>
+
+  <!-- The bottom bar. Filled in by boot() so the icons and labels live next to
+       the code that owns each page — see PAGE_TABS in app.js. -->
+  <nav class="tabbar" id="tabbar" role="tablist" aria-label="Sections"></nav>
 </div>
 
 <script src="./js/bridge-defaults.js" onerror="window.BRIDGE_DEFAULTS=window.BRIDGE_DEFAULTS||{}"></script>

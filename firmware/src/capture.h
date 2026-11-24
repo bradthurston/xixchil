@@ -82,6 +82,11 @@ static uint16_t  volatile g_cap_snaplen  = CAP_SNAPLEN_MAX;
 static uint32_t  volatile g_cap_start_ms = 0;
 static uint32_t  volatile g_cap_duration = CAP_DEFAULT_MS;
 
+// Why the last cap_start() failed. Swallowed returns here used to report only
+// "capture start failed", which hides a channel error, a promiscuous error and
+// an allocation error behind one useless string.
+static char g_cap_err[128] = {0};
+
 static inline bool cap_running() { return g_cap_on; }
 static inline size_t cap_used()  { return g_cap_used; }
 static inline size_t cap_buf_bytes() { return g_cap_cap; }
@@ -176,8 +181,9 @@ static bool cap_alloc() {
 }
 
 static bool cap_start(uint8_t channel, uint32_t duration_ms, uint16_t snaplen) {
-    if (g_cap_on) return false;
-    if (!cap_alloc()) return false;
+    g_cap_err[0] = 0;
+    if (g_cap_on)      { snprintf(g_cap_err, sizeof g_cap_err, "already running"); return false; }
+    if (!cap_alloc())  { snprintf(g_cap_err, sizeof g_cap_err, "psram alloc failed"); return false; }
 
     if (snaplen == 0 || snaplen > CAP_SNAPLEN_MAX) snaplen = CAP_SNAPLEN_MAX;
     if (duration_ms == 0 || duration_ms > CAP_MAX_MS) duration_ms = CAP_DEFAULT_MS;
@@ -193,7 +199,23 @@ static bool cap_start(uint8_t channel, uint32_t duration_ms, uint16_t snaplen) {
     WiFi.disconnect();
     delay(60);
 
-    if (esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) return false;
+    // Diagnose a set_channel failure rather than swallowing it. On a dual-band
+    // part (ESP32-C5) whether a channel is tunable depends on the radio's band
+    // mode, and a bare `false` here costs a whole flash cycle to chase down.
+    esp_err_t ch_e = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    if (ch_e != ESP_OK) {
+        wifi_mode_t        wm  = WIFI_MODE_NULL;
+        wifi_band_mode_t   bm  = WIFI_BAND_MODE_AUTO;
+        uint8_t            cur = 0;
+        wifi_second_chan_t sc  = WIFI_SECOND_CHAN_NONE;
+        esp_err_t be = esp_wifi_get_band_mode(&bm);
+        esp_err_t me = esp_wifi_get_mode(&wm);
+        esp_err_t ce = esp_wifi_get_channel(&cur, &sc);
+        snprintf(g_cap_err, sizeof g_cap_err,
+                 "set_channel(%u)=%d band=%d(be=%d) mode=%d(me=%d) cur=%u(ce=%d)",
+                 channel, (int)ch_e, (int)bm, (int)be, (int)wm, (int)me, cur, (int)ce);
+        return false;
+    }
 
     wifi_promiscuous_filter_t filter;
     filter.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA;
@@ -203,9 +225,11 @@ static bool cap_start(uint8_t channel, uint32_t duration_ms, uint16_t snaplen) {
     // Set the flag BEFORE enabling, or the first interrupt can arrive with
     // g_cap_on still false and be thrown away.
     g_cap_on = true;
-    if (esp_wifi_set_promiscuous(true) != ESP_OK) {
+    esp_err_t pr_e = esp_wifi_set_promiscuous(true);
+    if (pr_e != ESP_OK) {
         g_cap_on = false;
         esp_wifi_set_promiscuous_rx_cb(nullptr);
+        snprintf(g_cap_err, sizeof g_cap_err, "set_promiscuous(true)=%d", (int)pr_e);
         return false;
     }
 

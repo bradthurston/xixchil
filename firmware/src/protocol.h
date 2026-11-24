@@ -26,6 +26,37 @@ static const uint8_t  FRAME_MAGIC_1 = 0xDE;
 static const size_t   FRAME_HEADER_LEN = 8;   // magic(2) + type(1) + id(1) + len(4 LE)
 static const size_t   FRAME_MAX_PAYLOAD = 4096;  // PROTO_MAX_CHUNK
 
+// ── Band plan ────────────────────────────────────────────────────────────────
+// Channel policy lives here, ONCE, because nine call sites across eight modules
+// need it and must never disagree. The old blanket `ch >= 1 && ch <= 14` check
+// is correct only on a 2.4 GHz-only part: on a dual-band target (ESP32-C5) it
+// silently refused the entire 5 GHz radio, so every capture / transmit / portal
+// attempt on a 5 GHz channel died as a "caller error" that no caller made.
+//
+//   2.4 GHz: 1..14.
+//   5 GHz:   only real per-band centres, never arbitrary values in the gap
+//            between the bands — a range test would wrongly accept 16, 35, 99.
+//
+// HAS_5GHZ_BAND is set per build target (platformio.ini env), not guessed at
+// runtime, so a 2.4 GHz-only build keeps refusing 5 GHz instead of handing the
+// driver a channel it cannot tune.
+#ifdef HAS_5GHZ_BAND
+static inline bool wifi_channel_ok(int ch) {
+    if (ch >= 1 && ch <= 14) return true;
+    static const uint8_t k5[] = {36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108,
+                                 112, 116, 120, 124, 128, 132, 136, 140, 144,
+                                 149, 153, 157, 161, 165, 169, 173, 177};
+    for (size_t i = 0; i < sizeof(k5); i++) if ((int)k5[i] == ch) return true;
+    return false;
+}
+static inline const char* wifi_channel_hint() {
+    return "channel must be 1..14 (2.4 GHz) or a 5 GHz channel (36..177)";
+}
+#else
+static inline bool wifi_channel_ok(int ch) { return ch >= 1 && ch <= 14; }
+static inline const char* wifi_channel_hint() { return "channel must be 1..14"; }
+#endif
+
 // TYPE (values match BridgeProtocol: TYPE_CMD/RESP/EVENT/PCAP/ACK/HTML)
 enum FrameType : uint8_t {
     FT_CMD   = 0x01,  // phone -> device, JSON {"cmd":...,"args":{...}}

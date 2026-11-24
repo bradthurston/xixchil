@@ -45,3 +45,9 @@ commit-msg.txt
 
 # staged copies made by tools/verify_attacks.mjs
 .verify-attacks/
+
+# Wardrive map — local-only tool. Serves Brad's own capture data on 127.0.0.1:8111 and is
+# deliberately kept off the remote; do not commit.
+tools/wardrive-map.html
+tools/wardrive-map.sh
+tools/serve-wardrive-map.sh

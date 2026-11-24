@@ -6,7 +6,10 @@
 // it here is what caught the reason-code byte order below, which the reference
 // implementation gets wrong.
 //
-// Pure function of its arguments: no transport, no DOM, no device.
+// Pure function of its arguments: no transport, no DOM, no device. The band plan
+// is a sibling pure module for the same reason — it answers "is this a channel?"
+// before any device exists (see the note at the top of band.js).
+import { channelOk, channel24Ok, channelHint } from './band.js';
 
 /** Deauthentication management subtype. */
 export const SUBTYPE_DEAUTH = 0x0c;
@@ -336,10 +339,21 @@ export function ssidTag(name) {
   return tag(TAG.SSID, enc);
 }
 
-/** DS Parameter Set (§9.4.2.4) — carries the channel as a single octet. */
+/**
+ * DS Parameter Set (§9.4.2.4) — carries the channel as a single octet.
+ *
+ * This element is **2.4 GHz only**: §9.4.2.4 defines it for a STA operating in
+ * that band, and a real 5 GHz AP leaves it out (there the channel is carried by
+ * the HT/HE Operation elements plus the radio's own tuning). So the 1..14 range
+ * below is a protocol rule, not a hardware limit — a 5 GHz frame omits the
+ * element rather than trying to express a 5 GHz channel in it.
+ * `informationElements` does that omitting, so no caller has to remember.
+ */
 export function dsParameterTag(channel) {
-  if (!Number.isInteger(channel) || channel < 1 || channel > 14) {
-    throw new Error(`channel must be 1..14, got ${channel}`);
+  if (!channel24Ok(channel)) {
+    throw new Error(
+      `the DS Parameter Set element is 2.4 GHz only (§9.4.2.4) and carries 1..14, got ${channel} — a 5 GHz frame omits this element instead`,
+    );
   }
   return tag(TAG.DS_PARAMETER, Uint8Array.of(channel));
 }
@@ -378,9 +392,11 @@ function rateTags() {
 
 /** The tagged-parameter run both frame types share. */
 export function informationElements({ ssid, channel, security = SECURITY.WPA2 }) {
+  if (!channelOk(channel)) throw new Error(`${channelHint()}, got ${channel}`);
   const parts = [ssidTag(ssid), ...rateTags()];
   if (security === SECURITY.WPA2) parts.push(rsnTag());
-  parts.push(dsParameterTag(channel));
+  // 2.4 GHz only — a 5 GHz beacon carries no DS Parameter Set (§9.4.2.4).
+  if (channel24Ok(channel)) parts.push(dsParameterTag(channel));
   return concat(parts);
 }
 

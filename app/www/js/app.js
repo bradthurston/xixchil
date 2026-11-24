@@ -23,6 +23,7 @@ import {
 import './gps.js';    // window.GPS
 import './hashstore.js'; // window.HashStore
 import './wardrive.js';  // window.Wardrive
+import { LogitackerSession, parseDevices, LOGITACKER_COMMANDS, PREBUILT_SCRIPTS, PRESS_KEYS } from './logitacker.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -37,6 +38,9 @@ function log(kind, text) {
   const cls = { tx: 'tx', rx: 'rx', err: 'er', ev: 'ev' }[kind] || '';
   line.innerHTML = `<span class="t">${t}</span> <span class="${cls}">${escapeHtml(text)}</span>`;
   el.appendChild(line);
+  // This pane is fed by RF chatter, and an element that grows without bound gets
+  // slow — a slow reader starves the dongle and makes it drop its own output.
+  while (el.childElementCount > 400) el.removeChild(el.firstElementChild);
   el.scrollTop = el.scrollHeight;
 }
 
@@ -102,6 +106,236 @@ const decoder = new FrameDecoder({
   onError: (msg) => log('err', 'decode: ' + msg),
 });
 
+// ── dongle lane: nRF52840 + LOGITacker ───────────────────────────────────────
+//
+// A second, independent transport. The dongle is a TEXT SHELL (LOGITacker), not
+// the ESP32's framed protocol, so it gets its own UsbTransport instance and its
+// own session. The two never share a port, and the board being unplugged must
+// not disable this lane — they are different radios with different jobs.
+//
+// Everything this lane knows about the shell's grammar lives in logitacker.js and
+// is gated by tools/verify_logitacker.mjs against bytes captured off the device.
+
+const dongleTransport = new UsbTransport({
+  onData: (bytes) => dongleSession.feed(bytes),
+  onStatus: (kind, detail) => {
+    if (kind === 'connected')    dlog('link up (' + (detail.driver || 'usb') + ')');
+    if (kind === 'disconnected') { dlog('link down'); setDongleState(false); }
+    if (kind === 'detached')     { dlog('dongle detached'); setDongleState(false); }
+    if (kind === 'error')        dlog('stream error: ' + JSON.stringify(detail));
+  },
+});
+
+const dongleSession = new LogitackerSession({
+  send: (bytes) => dongleTransport.send(bytes),
+  onMode: (m) => setDongleState(true, m),
+  // The shell prints state asynchronously as <info> lines. They are not replies and
+  // must never be mistaken for one — see verify_logitacker.mjs. They go to Trace
+  // only: the hopper repeats "no RX … restart channel hopping" every ~500 ms, which
+  // buries the command output this card exists to show.
+  onEvent: (e) => log('ev', 'dongle: ' + e),
+});
+
+// The WebView helper (tools/webview_eval.mjs) drives this app over CDP, so reaching
+// the dongle lane from the console is what makes on-device testing possible at all.
+// Without it the only thing visible is the parser's *interpretation* of the shell,
+// which is exactly what you cannot trust when the parser is the suspect.
+window.__dongle = { get session() { return dongleSession; }, get transport() { return dongleTransport; } };
+
+function dlog(text) {
+  log('ev', 'dongle: ' + text);
+  const el = $('#dongleOut');
+  if (!el) return;
+  const t = new Date().toLocaleTimeString([], { hour12: false });
+  el.textContent += `${t}  ${text}\n`;
+  const kept = el.textContent.split('\n');
+  if (kept.length > 300) el.textContent = kept.slice(-300).join('\n');
+  el.scrollTop = el.scrollHeight;
+}
+
+let lastScriptPick = null;
+
+/** Send a whole script, one command at a time, showing each step as it lands.
+ *  The shell APPENDS to the current script, so every prebuilt one starts with
+ *  `script clear` — otherwise you inherit whatever was left from last time. */
+async function buildScript(s) {
+  lastScriptPick = s.id;
+  const text = $('#mjScriptText').value.trim();
+  if (s.steps.some((x) => x.includes('{text}')) && !text) {
+    dlog(`"${s.name}" types text — put it in the box above first.`);
+    return;
+  }
+  const cmds = s.steps.map((step) => step
+    .replace(/\{text\|([^}]*)\}/g, (_, d) => text || d)
+    .replace(/\{text\}/g, text));
+  dlog(`building "${s.name}" — ${cmds.length} steps`);
+  for (const cmd of cmds) {
+    // Most script commands answer NOTHING — the append is silent. Waiting the full
+    // timeout for each one makes a long script crawl, and reporting the silence as
+    // a failure is a lie. Send, listen briefly, move on: the read-back below is
+    // what actually proves the script got built.
+    const r = await dongleSession.run(cmd, { timeoutMs: 1200 });
+    if (r.timedOut) dlog(`> ${cmd}`);
+    else dlog(`> ${cmd}\n${(r.body || '').trim()}`);
+  }
+  const shown = await dongleSession.scriptShow({ timeoutMs: 8000 });
+  const readBack = (shown.body || '').trim();
+  dlog('the script on the dongle now reads:\n' + (readBack || '(no answer — the shell was too busy; try Show script)'));
+  // Verify instead of assuming: count the steps the shell printed back against the
+  // ones we sent. `script clear` wipes, so only what follows the LAST one counts.
+  const built = (readBack.match(/^\s*\d{4}:/gm) || []).length;
+  const expected = cmds.slice(cmds.lastIndexOf('script clear') + 1).length;
+  dlog(built === expected
+    ? `built — ${built} step(s) on the dongle`
+    : `the dongle reports ${built} step(s), expected ${expected}`);
+  dlog('to fire it: pick "inject target <address>" above, then "inject execute"');
+}
+
+function setDongleState(on, mode) {
+  const el = $('#dongleStatus');
+  if (el) el.textContent = on ? `linked · ${mode || 'ready'}` : 'not connected';
+}
+
+/** LOGITacker enumerates as Nordic 1915:520c and names itself; the plugin does
+ *  not always surface VID/PID, so match on the name as well. */
+function isDongle(d) {
+  const name = String(d.deviceName || '');
+  return /logitacker|nordic/i.test(name)
+      || d.vendorId === 0x1915 || d.vendorId === '0x1915' || d.productId === 0x520c;
+}
+
+/** Re-entrancy guard: the auto-link calls onPickDongle, which refreshes by scanning. */
+let dongleLinking = false;
+
+/** Is the dongle card linked? The status line is the one place that knows. */
+function dongleLinked() {
+  const st = ($('#dongleStatus')?.textContent || '').trim();
+  return !!st && st !== 'not connected';
+}
+
+/**
+ * Find USB serial devices, and LINK the dongle when there is nothing to decide.
+ *
+ * There used to be a second step here — tap the dongle row — that existed even when
+ * the dongle was the only candidate on the bus. Nothing said so: the guard below
+ * answered into a log line under the fold, which reads as a dead button. Brad hit
+ * exactly that, three taps in a row.
+ *
+ * `autoLink:false` is for the refresh inside onPickDongle, which would otherwise
+ * call itself.
+ */
+async function dongleScan({ autoLink = true } = {}) {
+  try {
+    state.dongleDevices = await dongleTransport.listDevices();
+    // Put the dongle first — it is the only device this card can use.
+    state.dongleDevices.sort((x, y) => isDongle(y) - isDongle(x));
+    renderDongleDevices();
+    // One candidate is not a choice. Link it rather than asking for a row tap.
+    const dongles = (state.dongleDevices || []).filter(isDongle);
+    if (autoLink && !dongleLinking && !dongleLinked() && dongles.length === 1) {
+      dlog('one dongle on the bus — linking it');
+      await onPickDongle(dongles[0]);
+    }
+    return state.dongleDevices;
+  } catch (e) {
+    dlog('scan failed: ' + e.message);
+    return [];
+  }
+}
+
+function renderDongleDevices() {
+  const box = $('#dongleDevices');
+  if (!box) return;
+  const list = state.dongleDevices || [];
+  if (!list.length) {
+    box.innerHTML = `<div class="empty">${Icon('unlink', { size: 30 })}No USB serial device found.<br>Plug the nRF52840 dongle into the phone.</div>`;
+    return;
+  }
+  box.innerHTML = list.map((d) => `
+    <div class="device" data-dongle-id="${escapeHtml(String(d.deviceId))}">
+      ${Icon('plug', { size: 20 })}
+      <div class="meta">
+        <div class="name">${escapeHtml(d.deviceName || 'USB serial device')}${isDongle(d) ? ' — dongle' : ''}</div>
+        <div class="sub">${escapeHtml(d.driverType || 'unknown driver')} · ${d.hasPermission ? 'permission granted' : 'needs permission'}</div>
+      </div>
+      ${Icon('chevron', { size: 18 })}
+    </div>`).join('');
+  box.querySelectorAll('.device').forEach((el) => {
+    el.addEventListener('click', () => {
+      const dev = list.find((d) => String(d.deviceId) === el.dataset.dongleId);
+      if (dev) onPickDongle(dev);
+    });
+  });
+}
+
+async function onPickDongle(dev) {
+  dongleLinking = true;
+  try {
+    dlog(`opening ${dev.deviceName || dev.deviceId}…`);
+    await dongleTransport.connect(dev);
+    // Sync: send a bare newline and wait for the prompt. Anything already in the
+    // buffer is unattributable, and guessing at it shifts every later reply.
+    const r = await dongleSession.ready();
+    if (!r.ok) {
+      // Not fatal: the port is open, and the dongle may be talking already. Ask it
+      // something rather than walking away from a link that demonstrably works.
+      dlog(`no prompt within ${Math.round(dongleSession.syncTimeoutMs / 1000)}s — if events appear below the link is live anyway; asking devices`);
+    } else {
+      dlog(`shell ready (${r.mode || '?'} mode)${r.attempts > 1 ? ` after ${r.attempts} tries` : ''}`);
+    }
+    dongleScan({ autoLink: false });   // refresh: the row should stop claiming it needs permission
+    await dongleDevices();
+  } catch (e) {
+    dlog('connect failed: ' + e.message);
+    setDongleState(false);
+  } finally {
+    dongleLinking = false;
+  }
+}
+
+async function dongleRun(cmd) {
+  const r = await dongleSession.run(cmd);
+  if (r.timedOut)          dlog(`> ${cmd}\nno reply within ${dongleSession.timeoutMs}ms`);
+  else if (r.notFound)     dlog(`> ${cmd}\n"${cmd.split(' ')[0]}" is not a command this shell has`);
+  else                     dlog(`> ${cmd}\n${r.body || '(no output)'}`);
+  // Asking for the device list by hand is still asking for the device list: render
+  // it, so the table does not stay empty just because the command came from the box
+  // rather than the button.
+  if (!r.timedOut && /^devices\b/i.test(r.cmd || '')) renderDongleTable(parseDevices(r.body));
+  return r;
+}
+
+/** The first question worth asking a MouseJack radio: what can it hear? */
+async function dongleDevices() {
+  const r = await dongleSession.devices();
+  if (r.timedOut) { dlog('devices: no reply'); return; }
+  renderDongleTable(r.devices);
+  if (!r.devices.length) {
+    renderDongleTable([], 'Nothing heard yet — the dongle keeps listening. Tap again in a moment.');
+    dlog('no devices seen yet (it keeps scanning — try again in a moment)');
+  }
+  else for (const d of r.devices) dlog(`${d.addr}  ${d.kind}${d.encrypted ? ' · encrypted' : ''}`);
+}
+
+function renderDongleTable(list, emptyMsg) {
+  const box = $('#dongleTable');
+  if (!box) return;
+  if (!list || !list.length) {
+    box.innerHTML = emptyMsg
+      ? `<div class="empty">${Icon('scan', { size: 30 })}${escapeHtml(emptyMsg)}</div>`
+      : '';
+    return;
+  }
+  box.innerHTML = list.map((d) => `
+    <div class="device">
+      ${Icon('plug', { size: 20 })}
+      <div class="meta">
+        <div class="name">${escapeHtml(d.addr)} · ${escapeHtml(d.kind)}</div>
+        <div class="sub">${escapeHtml(d.cls || 'unclassified')}${d.encrypted ? ' · link encrypted' : ''} · WPID ${escapeHtml(String(d.wpid || '?'))}</div>
+      </div>
+    </div>`).join('');
+}
+
 // ── request/response ──────────────────────────────────────────────────────────
 function request(cmd, args, { timeoutMs = 4000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -120,6 +354,10 @@ function request(cmd, args, { timeoutMs = 4000 } = {}) {
     });
   });
 }
+
+/** Which attack row is open (its id), or null. Kept at module scope so a repaint
+ *  — and every state change repaints — does not slam the row you were reading. */
+let openAttackId = null;
 
 // ── capture session ───────────────────────────────────────────────────────────
 capture = new CaptureSession({
@@ -224,7 +462,9 @@ function renderDeviceInfo(info) {
 }
 
 function renderStages() {
-  const order = ['capture', 'analyze', 'analysis', 'attack', 'wardrive'];
+  // Attack moved to its own tab, so the flow bar is only what listens and
+  // what reads what was heard.
+  const order = ['capture', 'analyze', 'analysis', 'wardrive'];
   const labels = { capture: 'Capture', analyze: 'Analyze', analysis: 'Analysis', attack: 'Attack', wardrive: 'Wardrive' };
   const box = $('#stages');
   if (!box) return;
@@ -239,7 +479,7 @@ function renderStages() {
       const newStage = el.dataset.stage;
       state.stage = newStage;
       renderStages();
-      renderStagePanel();
+      refreshPanels();
       // Wardrive card visibility
       toggleWardriveMode(newStage === 'wardrive');
     });
@@ -256,7 +496,7 @@ function onEvent(json) {
     if (state.stage === 'attack') {
       syncAfterBurst();
     }
-    if (state.stage === 'capture') renderStagePanel();
+    if (state.stage === 'capture') refreshPanels();
     return;
   }
   if (json.event === 'portal_submission') {
@@ -320,6 +560,9 @@ function fmtBytes(n) {
 function renderStagePanel() {
   const box = $('#stagePanel');
   if (!box) return;
+  // `state.stage` can still hold 'attack' from before the split. Rather than
+  // render an empty panel, fall back to the first stage this panel owns.
+  if (!['capture', 'analyze', 'analysis', 'wardrive'].includes(state.stage)) state.stage = 'capture';
   if (state.stage === 'capture') { renderCapturePanel(box); return; }
   if (state.stage === 'analyze') { renderAnalyzePanel(box); return; }
   if (state.stage === 'analysis') { renderAnalysisPanel(box); return; }
@@ -434,7 +677,7 @@ async function onCaptureStart() {
   try {
     const resp = await capture.start({ channel: capture.channel, durationMs: capture.durationMs });
     log('ev', `capture started ch${resp.channel} for ${resp.duration_ms} ms, buffer ${fmtBytes(resp.buf_bytes)}`);
-    renderStagePanel();
+    refreshPanels();
     startCapTicker();
   } catch (e) {
     log('err', 'capture start: ' + e.message);
@@ -449,7 +692,7 @@ async function onCaptureStop() {
   } catch (e) {
     log('err', 'capture stop: ' + e.message);
   }
-  renderStagePanel();
+  refreshPanels();
 }
 
 async function onCaptureSync() {
@@ -462,14 +705,14 @@ async function onCaptureSync() {
   } catch (e) {
     log('err', 'sync: ' + e.message);
   }
-  renderStagePanel();
+  refreshPanels();
 }
 
 async function onCaptureSave() {
   try {
     const saved = await capture.save();
     log('ev', `saved ${saved.path} (${fmtBytes(saved.bytes)}, ${saved.packets} packets)`);
-    renderStagePanel();
+    refreshPanels();
   } catch (e) {
     log('err', 'save: ' + e.message);
   }
@@ -508,7 +751,7 @@ async function onCaptureContStart() {
       durationMs: Number(durMs),
     });
     log('ev', `continuous: started ch${resp.channel}, ${resp.duration_ms} ms segments`);
-    renderStagePanel();
+    refreshPanels();
     startContTicker();
   } catch (e) {
     log('err', 'continuous start: ' + e.message);
@@ -529,7 +772,7 @@ async function onCaptureContStop() {
   } catch (e) {
     log('err', 'continuous stop: ' + e.message);
   }
-  renderStagePanel();
+  refreshPanels();
 }
 
 // ── analyze panel ─────────────────────────────────────────────────────────────
@@ -586,7 +829,7 @@ function onAnalyzeRun() {
     log('err', 'analyze: ' + e.message);
     return;
   }
-  renderStagePanel();
+  refreshPanels();
 }
 
 function analyzeReportHtml(r) {
@@ -719,7 +962,7 @@ function onAnalysisRun() {
     `${s.skipped} skipped, ${s.rogueNames} un-answered leaked name${s.rogueNames === 1 ? '' : 's'}`);
   const top = topTarget(analysisPlan);
   if (top) log('ev', `best target: ${top.name} — ${top.action.label}`);
-  renderStagePanel();
+  refreshPanels();
 }
 
 /**
@@ -980,29 +1223,50 @@ function attackContext() {
   };
 }
 
-function renderAttackPanel(box) {
+function renderAttackPanel(box, opts = {}) {
   const ctx = attackContext();
-  const list = attackList(ctx);
-  const heldBack = blockedOnTransmit(ctx);
-  const cfg = bridgeConfig();
+  // One renderer, two pages: Attacks shows every attack but cracking, Crack shows
+  // only cracking. Sharing the drawing code is the point — an attack looks the
+  // same wherever it is shown.
+  let list = attackList(ctx);
+  if (opts.only)    list = list.filter((a) => a.id === opts.only);
+  if (opts.exclude) list = list.filter((a) => a.id !== opts.exclude);
+  const heldBack = blockedOnTransmit(ctx).filter((a) => list.some((b) => b.id === a.id));
+  const head = opts.head || {
+    icon: 'attack',
+    name: 'Attack',
+    sub: 'Automated attacks against what the capture found. Every entry says what it needs; ' +
+         'nothing here reports having run when it did not.',
+  };
 
   // Every air-derived value below — SSIDs, BSSIDs, the passphrase, error text
   // from the bridge — goes through escapeHtml. Everything else is static markup
   // or a number.
   const listHtml = list.map((a) => {
-    const state = a.ready ? 'ready' : 'blocked';
+    // Three states, not two. A ready attack whose firmware half is only half there
+    // used to show "ready" next to a "partial" label — the same claim in a smaller
+    // font. The badge tells the truth first; readiness comes second.
+    const state = a.built === 'partial' ? 'partial' : (a.ready ? 'ready' : 'blocked');
+    // "not ready" reads as a state; "blocked" reads as someone stopping you.
+    const badge = state === 'blocked' ? 'not ready' : state;
     const blockers = a.blockers.map((b) => `
       <li><span class="bneed">${escapeHtml(b.need)}</span>${escapeHtml(b.text)}</li>`).join('');
+    // One row per attack, opened by tapping it. Six cards open at once was a wall of
+    // prose you had to scroll through to reach the one you wanted — the name and the
+    // state badge belong on screen, the paragraphs do not. The body is a native
+    // <details>, so showing and hiding it costs no JavaScript.
     return `
-    <div class="atk ${state}">
-      <div class="atkhead">
+    <details class="atk ${state}" data-atk="${escapeHtml(a.id)}"${openAttackId === a.id ? ' open' : ''}>
+      <summary class="atkhead">
         <span class="atkicon">${Icon(a.icon, { size: 18 })}</span>
         <div class="atkmain">
           <div class="atkname">${escapeHtml(a.name)}</div>
-          <div class="atkmeta">${escapeHtml(a.kind)} · ${escapeHtml(a.built)}</div>
+          <div class="atkmeta">${escapeHtml(a.kind)}</div>
         </div>
-        <div class="atkstate ${state}">${state === 'ready' ? 'ready' : 'blocked'}</div>
-      </div>
+        <div class="atkstate ${state}">${badge}</div>
+        <span class="atkchev">${Icon('chevron', { size: 16 })}</span>
+      </summary>
+      <div class="atkbody">
       <div class="atktag">${escapeHtml(a.tagline)}</div>
       ${a.firmwareNote ? `<div class="atkfw">${
         a.firmware ? `<code>${escapeHtml(a.firmware)}</code> ` : ''
@@ -1014,54 +1278,25 @@ function renderAttackPanel(box) {
       ${a.id === 'mana' ? manaActionHtml(a) : ''}
       ${a.id === 'portal' ? portalActionHtml(a) : ''}
       ${a.id === 'mousejack' ? mousejackActionHtml(a) : ''}
-    </div>`;
+      </div>
+    </details>`;
   }).join('');
 
   box.innerHTML = `
     <div class="stagehead">
-      ${Icon('attack', { size: 22 })}
+      ${Icon(head.icon, { size: 22 })}
       <div>
-        <div class="stagename">Attack</div>
-        <div class="stagesub">Automated attacks against what the capture found. Every entry says
-          what it needs; nothing here reports having run when it did not.</div>
+        <div class="stagename">${escapeHtml(head.name)}</div>
+        <div class="stagesub">${escapeHtml(head.sub)}</div>
       </div>
     </div>
 
     <div class="secsum">
       <div class="sechead">${Icon('link', { size: 16 })} Crack bridge</div>
-      <div class="pnlnote">The search runs on the GPU box, not on this phone — this phone extracts
-        the handshake, the bridge searches the wordlist.</div>
-      <div class="fields">
-        <label class="field">
-          <span>Bridge URL</span>
-          <input id="brUrl" type="url" inputmode="url" autocapitalize="off" spellcheck="false"
-                 value="${escapeHtml(cfg.url)}" placeholder="${escapeHtml(BRIDGE_DEFAULT_URL)}">
-          <select id="brUrlSelect" style="margin-top:4px;font-size:12px;width:100%">
-            <option value="">${bridgeUrlHistory().length ? '— past URLs —' : '— no history yet —'}</option>
-            ${bridgeUrlHistory().map((u) => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join('')}
-          </select>
-        </label>
-        <label class="field">
-          <span>Token</span>
-          <input id="brToken" type="password" autocapitalize="off" spellcheck="false"
-                 value="${escapeHtml(cfg.token)}" placeholder="from ~/projects/crackbridge/token">
-        </label>
-      </div>
-      <div class="row">
-        <button id="brTest" class="ghost">${Icon('link', { size: 18 })}Test connection</button>
-      </div>
-      <div id="brState">${bridgeStateHtml()}</div>
-    </div>
-
-    <div class="secsum">
-      <div class="sechead">${Icon('scan', { size: 16 })} Channel analyzer</div>
-      <div class="pnlnote">Quickly sweeps channels 1–11 and counts packets per channel to show traffic density. Choose a quiet channel for your AP.</div>
-      ${analyzerResult && !analyzerRunning ? analyzerResultHtml(analyzerResult) : ''}
+      ${bridgeStateHtml()}
       <div class="row" style="margin-top:6px">
-        <button id="anScan" class="ghost" ${analyzerRunning ? 'disabled' : ''}>
-          ${Icon('scan', { size: 16 })}${analyzerRunning ? `Scanning (${analyzerResult?.currentChannel ? analyzerResult.currentChannel + '/11' : '0/11'})` : 'Scan channels'}
-        </button>
-        ${analyzerRunning ? `<button id="anStop" class="ghost" style="font-size:12px">${Icon('close', { size: 14 })}Stop</button>` : ''}
+        <button id="brOpenSettings" class="ghost" style="font-size:12px">
+          ${Icon('gear', { size: 14 })}Bridge settings</button>
       </div>
     </div>
 
@@ -1073,133 +1308,133 @@ function renderAttackPanel(box) {
       ${heldBack.length} separate problems.</div>` : ''}
   `;
 
-  $('#brUrl')?.addEventListener('change', (e) => {
-    saveBridgeUrl(e.target.value);
-    localStorage.setItem('bridgeUrl', e.target.value.trim());
-    bridgeStatus = null; bridgeError = null;
-    renderStagePanel();
+  // The rows show and hide themselves (native <details>); this only remembers which
+  // one, so the next repaint puts the screen back the way the operator left it.
+  box.querySelectorAll('details.atk').forEach((d) => {
+    d.addEventListener('toggle', () => {
+      if (d.open) {
+        openAttackId = d.dataset.atk;
+        box.querySelectorAll('details.atk').forEach((o) => { if (o !== d) o.open = false; });
+      } else if (openAttackId === d.dataset.atk) {
+        openAttackId = null;
+      }
+    });
   });
-  $('#brUrlSelect')?.addEventListener('change', (e) => {
-    const val = e.target.value;
-    if (!val) return;
-    const input = $('#brUrl');
-    if (input) { input.value = val; }
-    saveBridgeUrl(val);
-    localStorage.setItem('bridgeUrl', val.trim());
-    e.target.value = '';
-    bridgeStatus = null; bridgeError = null;
-    renderStagePanel();
-  });
-  $('#brToken')?.addEventListener('change', (e) => {
-    localStorage.setItem('bridgeToken', e.target.value.trim());
-    bridgeStatus = null; bridgeError = null;
-    renderStagePanel();
-  });
-  $('#brTest')?.addEventListener('click', onBridgeTest);
-  $('#crackExtract')?.addEventListener('click', onExtractHandshakes);
-  $('#crackRun')?.addEventListener('click', onCrackRun);
+
+  // Every lookup below is scoped to `box`. The same card is drawn on more than one
+  // page — the Crack tab and the Attacks tab both build it — so binding through the
+  // document resolves to whichever copy comes first in the document order and
+  // leaves the copy the operator is actually looking at dead: a button that looks
+  // live, taps, and does nothing. querying the box can only ever reach this panel's
+  // own node, so a second copy on another page cannot steal the wiring.
+  const $b = (sel) => box.querySelector(sel);
+  // The bridge's own controls moved to Settings (see wireBridgeConfig); all that
+  // stays here is the way over there.
+  $b('#brOpenSettings')?.addEventListener('click', () => setPage('settings'));
+  $b('#crackExtract')?.addEventListener('click', onExtractHandshakes);
+  $b('#crackRun')?.addEventListener('click', onCrackRun);
 
   // Crack strategy controls — save to localStorage on change
-  $('#crackWl')?.addEventListener('change', (e) => {
+  $b('#crackWl')?.addEventListener('change', (e) => {
     const s = crackStrategy();
     s.wordlist = e.target.value;
     saveCrackStrategy(s);
   });
-  $('#crackRl')?.addEventListener('change', (e) => {
+  $b('#crackRl')?.addEventListener('change', (e) => {
     const s = crackStrategy();
     s.rules = e.target.value;
     saveCrackStrategy(s);
   });
-  $('#crackMode')?.addEventListener('change', (e) => {
+  $b('#crackMode')?.addEventListener('change', (e) => {
     const s = crackStrategy();
     s.mode = e.target.value;
     saveCrackStrategy(s);
-    renderAttackPanel($('#stagePanel')); // toggle mask field visibility
+    refreshPanels(); // toggle mask field visibility
   });
-  $('#crackMask')?.addEventListener('change', (e) => {
+  $b('#crackMask')?.addEventListener('change', (e) => {
     const s = crackStrategy();
     s.mask = e.target.value.trim() || CRACK_DEFAULT_STRATEGY.mask;
     saveCrackStrategy(s);
   });
-  $('#crackChain')?.addEventListener('change', (e) => {
+  $b('#crackChain')?.addEventListener('change', (e) => {
     const s = crackStrategy();
     s.chain = e.target.checked;
     saveCrackStrategy(s);
   });
-  $('#deauthGo')?.addEventListener('click', onDeauthCapture);
-  $('#deauthStop')?.addEventListener('click', onDeauthStop);
-  $('#karmaGo')?.addEventListener('click', onKarmaStart);
-  $('#karmaStop')?.addEventListener('click', onKarmaStop);
-  $('#karmaRefresh')?.addEventListener('click', pollKarmaStatus);
-  $('#karmaDefaults')?.addEventListener('click', () => fillDefaults('karmaList'));
-  $('#karmaBssidRandom')?.addEventListener('click', () => {
-    const el = $('#karmaBssid');
+  $b('#deauthGo')?.addEventListener('click', onDeauthCapture);
+  $b('#deauthStop')?.addEventListener('click', onDeauthStop);
+  $b('#karmaGo')?.addEventListener('click', onKarmaStart);
+  $b('#karmaStop')?.addEventListener('click', onKarmaStop);
+  $b('#karmaRefresh')?.addEventListener('click', pollKarmaStatus);
+  $b('#karmaDefaults')?.addEventListener('click', () => fillDefaults('karmaList'));
+  $b('#karmaBssidRandom')?.addEventListener('click', () => {
+    const el = $b('#karmaBssid');
     if (el) { el.value = randomMac(); localStorage.setItem('attackBssid', el.value); }
   });
-  $('#karmaBssid')?.addEventListener('change', (e) => {
+  $b('#karmaBssid')?.addEventListener('change', (e) => {
     localStorage.setItem('attackBssid', e.target.value.trim());
   });
-  $('#manaGo')?.addEventListener('click', onManaStart);
-  $('#manaStop')?.addEventListener('click', onManaStop);
-  $('#manaRefresh')?.addEventListener('click', pollManaStatus);
+  $b('#manaGo')?.addEventListener('click', onManaStart);
+  $b('#manaStop')?.addEventListener('click', onManaStop);
+  $b('#manaRefresh')?.addEventListener('click', pollManaStatus);
   // Portal — the twin. Scan seeds it, a human picks, the token arms it.
-  $('#portalScan')?.addEventListener('click', onPortalScan);
-  $('#portalPick')?.addEventListener('change', onPortalPickCandidate);
-  $('#portalGo')?.addEventListener('click', onPortalStart);
-  $('#portalStop')?.addEventListener('click', onPortalStop);
-  $('#portalRefresh')?.addEventListener('click', pollPortalStatus);
-  $('#portalPush')?.addEventListener('click', onPortalPushPage);
-  $('#portalPageDefault')?.addEventListener('click', () => {
-    const el = $('#portalPage');
+  $b('#portalScan')?.addEventListener('click', onPortalScan);
+  $b('#portalPick')?.addEventListener('change', onPortalPickCandidate);
+  $b('#portalGo')?.addEventListener('click', onPortalStart);
+  $b('#portalStop')?.addEventListener('click', onPortalStop);
+  $b('#portalRefresh')?.addEventListener('click', pollPortalStatus);
+  $b('#portalPush')?.addEventListener('click', onPortalPushPage);
+  $b('#portalPageDefault')?.addEventListener('click', () => {
+    const el = $b('#portalPage');
     if (el) {
       const fresh = portalPageHtml(portalTwin?.ssid, portalTemplateId());
       el.value = fresh;
       localStorage.removeItem('portalPage');
     }
   });
-  $('#portalTmpl')?.addEventListener('change', (e) => {
+  $b('#portalTmpl')?.addEventListener('change', (e) => {
     const id = e.target.value;
     localStorage.setItem('portalTemplate', id);
-    const el = $('#portalPage');
+    const el = $b('#portalPage');
     if (el) {
       const fresh = portalPageHtml(portalTwin?.ssid, id);
       el.value = fresh;
       localStorage.removeItem('portalPage');
     }
   });
-  $('#portalSubsClear')?.addEventListener('click', () => { portalSubs = []; renderStagePanel(); });
-  $('#manaDefaults')?.addEventListener('click', () => fillDefaults('manaList'));
-  $('#manaBssidRandom')?.addEventListener('click', () => {
-    const el = $('#manaBssid');
+  $b('#portalSubsClear')?.addEventListener('click', () => { portalSubs = []; refreshPanels(); });
+  $b('#manaDefaults')?.addEventListener('click', () => fillDefaults('manaList'));
+  $b('#manaBssidRandom')?.addEventListener('click', () => {
+    const el = $b('#manaBssid');
     if (el) { el.value = randomMac(); localStorage.setItem('attackBssid', el.value); }
   });
-  $('#manaBssid')?.addEventListener('change', (e) => {
+  $b('#manaBssid')?.addEventListener('change', (e) => {
     localStorage.setItem('attackBssid', e.target.value.trim());
   });
-  $('#manaPopulate')?.addEventListener('click', onManaPopulate);
+  $b('#manaPopulate')?.addEventListener('click', onManaPopulate);
 
   // ── mousejack event handlers ─────────────────────────────────────────────
-  $('#mjGo')?.addEventListener('click', onMousejackSend);
-  $('#mjClear')?.addEventListener('click', () => {
+  $b('#mjGo')?.addEventListener('click', onMousejackSend);
+  $b('#mjClear')?.addEventListener('click', () => {
     state.mjResult = null; state.mjSending = false;
-    renderStagePanel();
+    refreshPanels();
   });
-  $('#mjPayload')?.addEventListener('change', (e) => {
+  $b('#mjPayload')?.addEventListener('change', (e) => {
     const p = MOUSEJACK_PAYLOADS.find(p => p.id === e.target.value);
     if (p && p.hex) {
-      $('#mjHex').value = p.hex;
-      $('#mjInfo').textContent = escapeHtml(p.description);
+      $b('#mjHex').value = p.hex;
+      $b('#mjInfo').textContent = escapeHtml(p.description);
     } else if (p) {
-      $('#mjInfo').textContent = escapeHtml(p.description || 'Type hex directly below.');
+      $b('#mjInfo').textContent = escapeHtml(p.description || 'Type hex directly below.');
     }
   });
-  $('#mjAddr')?.addEventListener('change', (e) => {
+  $b('#mjAddr')?.addEventListener('change', (e) => {
     localStorage.setItem('mousejackAddr', e.target.value.trim());
   });
-  $('#mjCh')?.addEventListener('change', (e) => {
+  $b('#mjCh')?.addEventListener('change', (e) => {
     localStorage.setItem('mousejackCh', e.target.value);
   });
-  $('#mjCount')?.addEventListener('change', (e) => {
+  $b('#mjCount')?.addEventListener('change', (e) => {
     localStorage.setItem('mousejackCount', e.target.value);
   });
 
@@ -1207,34 +1442,34 @@ function renderAttackPanel(box) {
 
   function captureToPreset(type) {
     const prefix = type;
-    const ch = $(`#${prefix}Ch`);
-    const list = $(`#${prefix}List`);
-    const bssid = $(`#${prefix}Bssid`);
+    const ch = $b(`#${prefix}Ch`);
+    const list = $b(`#${prefix}List`);
+    const bssid = $b(`#${prefix}Bssid`);
     const common = {
       bssid: bssid?.value?.trim() || '',
       channel: parseInt(ch?.value || '6', 10),
       ssids: (list?.value || '').split('\n').map(s => s.trim()).filter(Boolean),
     };
     if (type === 'karma') {
-      const mode = $(`#${type}ModeSel`);
+      const mode = $b(`#${type}ModeSel`);
       return { ...common, type: 'karma', mode: mode?.value || 'allowlist' };
     }
-    const intv = $(`#${type}Intv`);
+    const intv = $b(`#${type}Intv`);
     return { ...common, type: 'mana', interval: parseInt(intv?.value || '110', 10) };
   }
   function fillFromPreset(type, p) {
     const prefix = type;
-    const ch = $(`#${prefix}Ch`);
-    const list = $(`#${prefix}List`);
-    const bssid = $(`#${prefix}Bssid`);
+    const ch = $b(`#${prefix}Ch`);
+    const list = $b(`#${prefix}List`);
+    const bssid = $b(`#${prefix}Bssid`);
     if (ch) ch.value = String(p.channel || 6);
     if (list) list.value = (p.ssids || []).join('\n');
     if (bssid) { bssid.value = p.bssid || ''; localStorage.setItem('attackBssid', p.bssid || ''); }
     if (type === 'karma') {
-      const mode = $(`#${type}ModeSel`);
+      const mode = $b(`#${type}ModeSel`);
       if (mode) mode.value = p.mode || 'allowlist';
     } else {
-      const intv = $(`#${type}Intv`);
+      const intv = $b(`#${type}Intv`);
       if (intv) intv.value = String(p.interval || 110);
     }
     localStorage.setItem(`${type}Preset`, '');
@@ -1246,11 +1481,11 @@ function renderAttackPanel(box) {
     const config = captureToPreset(type);
     savePreset(name, config);
     localStorage.setItem(`${type}Preset`, name);
-    renderAttackPanel($('#stagePanel'));
+    refreshPanels();
   }
 
-  $('#karmaPresetSave')?.addEventListener('click', () => promptSave('karma'));
-  $('#karmaPresetLoad')?.addEventListener('change', (e) => {
+  $b('#karmaPresetSave')?.addEventListener('click', () => promptSave('karma'));
+  $b('#karmaPresetLoad')?.addEventListener('change', (e) => {
     const name = e.target.value;
     if (!name) return;
     const all = loadPresets();
@@ -1258,19 +1493,19 @@ function renderAttackPanel(box) {
     if (!p) return;
     fillFromPreset('karma', p);
     localStorage.setItem('karmaPreset', name);
-    renderAttackPanel($('#stagePanel'));
+    refreshPanels();
   });
-  $('#karmaPresetDel')?.addEventListener('click', () => {
+  $b('#karmaPresetDel')?.addEventListener('click', () => {
     const name = localStorage.getItem('karmaPreset');
     if (!name) return;
     if (!confirm(`Delete preset "${name}"?`)) return;
     deletePreset(name);
     localStorage.removeItem('karmaPreset');
-    renderAttackPanel($('#stagePanel'));
+    refreshPanels();
   });
 
-  $('#manaPresetSave')?.addEventListener('click', () => promptSave('mana'));
-  $('#manaPresetLoad')?.addEventListener('change', (e) => {
+  $b('#manaPresetSave')?.addEventListener('click', () => promptSave('mana'));
+  $b('#manaPresetLoad')?.addEventListener('change', (e) => {
     const name = e.target.value;
     if (!name) return;
     const all = loadPresets();
@@ -1278,19 +1513,17 @@ function renderAttackPanel(box) {
     if (!p) return;
     fillFromPreset('mana', p);
     localStorage.setItem('manaPreset', name);
-    renderAttackPanel($('#stagePanel'));
+    refreshPanels();
   });
-  $('#manaPresetDel')?.addEventListener('click', () => {
+  $b('#manaPresetDel')?.addEventListener('click', () => {
     const name = localStorage.getItem('manaPreset');
     if (!name) return;
     if (!confirm(`Delete preset "${name}"?`)) return;
     deletePreset(name);
     localStorage.removeItem('manaPreset');
-    renderAttackPanel($('#stagePanel'));
+    refreshPanels();
   });
 
-  $('#anScan')?.addEventListener('click', onAnalyzerScan);
-  $('#anStop')?.addEventListener('click', onAnalyzerStop);
 }
 
 function bridgeStateHtml() {
@@ -1753,13 +1986,17 @@ function mousejackActionHtml(a) {
     `<option value="${p.id}"${p.hex ? '' : ' selected'}>${escapeHtml(p.name)}</option>`
   ).join('');
 
+  // Grouped by what you are doing, not by what type the input is: aim, then
+  // payload, then fire. The long tail (raw hex, burst size, clear) folds away —
+  // the everyday path is one address, one payload, one button.
   return `<div class="crackbox">
-    <div class="crackmeta">Sends raw nRF24 packets at a Logitech Unifying (or other nRF24-based) receiver.
-      The nRF24 module is a separate 2.4 GHz radio — this does not use the ESP32's WiFi at all.
-      Set the receiver's 5-byte address, channel, and payload, then fire.</div>
-    <div class="fields">
+    <div class="crackmeta">Raw nRF24 packets at a Logitech Unifying (or any nRF24) receiver. That is a
+      separate 2.4 GHz radio — none of this goes through the ESP32's WiFi.</div>
+
+    <div class="sechead">Aim</div>
+    <div class="fields aim">
       <label class="field">
-        <span>Receiver address (5 bytes hex)</span>
+        <span>Receiver address</span>
         <input id="mjAddr" type="text" autocapitalize="off" spellcheck="false"
                placeholder="e7e7e7e7e7" value="${escapeHtml(addrSaved)}"
                style="font-family:monospace;font-size:12px">
@@ -1769,26 +2006,33 @@ function mousejackActionHtml(a) {
         <input id="mjCh" type="number" value="${escapeHtml(chSaved)}" min="0" max="125" style="width:3rem">
       </label>
     </div>
-    <div class="fields">
-      <label class="field">
-        <span>Canned payload</span>
-        <select id="mjPayload">${payloadOptions}</select>
-      </label>
-      <label class="field">
-        <span>Burst</span>
-        <input id="mjCount" type="number" value="${escapeHtml(countSaved)}" min="1" max="20" style="width:3rem">
-      </label>
-    </div>
+
+    <div class="sechead">Payload</div>
     <label class="field">
-      <span>Hex payload (max 32 bytes)</span>
-      <textarea id="mjHex" rows="2" autocapitalize="off" spellcheck="false"
-        placeholder="e7e7e7e7e700010203" style="font-family:monospace;font-size:12px"></textarea>
+      <span>Canned</span>
+      <select id="mjPayload">${payloadOptions}</select>
     </label>
-    <div class="crackmeta" id="mjInfo">Select a canned payload or type hex directly. Max 64 hex chars (32 bytes).</div>
+    <div class="crackmeta" id="mjInfo">Pick a canned payload, or set your own hex under Advanced.</div>
+
     <div class="row" style="margin-top:8px">
       <button id="mjGo" class="primary">${Icon('antenna', { size: 18 })}Send</button>
-      <button id="mjClear" class="ghost" style="font-size:12px">${Icon('close', { size: 14 })}Clear</button>
     </div>
+
+    <details id="mjAdvanced">
+      <summary>Advanced</summary>
+      <label class="field">
+        <span>Hex payload (max 32 bytes)</span>
+        <textarea id="mjHex" rows="2" autocapitalize="off" spellcheck="false"
+          placeholder="e7e7e7e7e700010203" style="font-family:monospace;font-size:12px"></textarea>
+      </label>
+      <label class="field">
+        <span>Packets per send</span>
+        <input id="mjCount" type="number" value="${escapeHtml(countSaved)}" min="1" max="20" style="width:3rem">
+      </label>
+      <div class="row">
+        <button id="mjClear" class="ghost" style="font-size:12px">${Icon('unlink', { size: 14 })}Clear</button>
+      </div>
+    </details>
   </div>`;
 }
 
@@ -1801,10 +2045,15 @@ function onPickTarget(e) {
   const idx = parseInt(e.currentTarget.dataset.idx, 10);
   if (!isNaN(idx)) {
     selectedTargetIndex = idx;
-    // Navigate to Attack so the operator sees the target on the card
-    state.stage = 'attack';
-    renderStages();
-    renderStagePanel();
+    // Take the operator to the Attacks PAGE. Attack is its own tab since the
+    // split, so `state.stage = 'attack'` is dead: renderStagePanel() treats
+    // 'attack' as a stage it does not own and resets it to 'capture'
+    // (see renderStagePanel), so the pick used to repaint the Capture step and
+    // leave the operator with no way to reach "Fire the burst".
+    setPage('attacks');
+    // Land on the card the pick was for, not the top of a collapsed list.
+    openAttackId = 'handshake';
+    refreshPanels();
   }
 }
 
@@ -1824,7 +2073,7 @@ async function onDeauthCapture() {
 
   txRunning = true;
   txResult = { phase: 'transmitting', requested: count, count, interval_ms: intervalMs, channel: t.channel };
-  renderStagePanel();
+  refreshPanels();
 
   let frame;
   try {
@@ -1832,7 +2081,7 @@ async function onDeauthCapture() {
   } catch (e) {
     txRunning = false; txResult = null;
     log('err', 'deauth: could not build the frame — ' + e.message);
-    renderStagePanel();
+    refreshPanels();
     return;
   }
 
@@ -1853,7 +2102,7 @@ async function onDeauthCapture() {
       phase: 'transmitting',
     };
     log('ev', `deauth: burst started — ${resp.count} frames on ch${resp.channel}, ${resp.interval_ms} ms apart`);
-    renderStagePanel();
+    refreshPanels();
 
     // Wait out the burst, then listen for the rejoin. The firmware paces it, so
     // the app's wait is just the burst's own duration plus a margin.
@@ -1869,14 +2118,14 @@ async function onDeauthCapture() {
 
     // Now the second half: listen for the handshake the burst was meant to provoke.
     txRunning = false;
-    renderStagePanel();
+    refreshPanels();
     await onStartCaptureAfterBurst(t.channel);
   } catch (e) {
     txResult = { ...txResult, sent: 0, failed: 0, phase: 'failed', note: e.message };
     log('err', 'deauth: ' + e.message);
   }
   txRunning = false;
-  renderStagePanel();
+  refreshPanels();
 }
 
 /** Auto-sync and extract after the burst capture finishes. */
@@ -1923,7 +2172,7 @@ async function syncAfterBurst() {
       log('ev', `bridge: ${bridgeStatus.hashcat} ready`);
     } catch { /* fine */ }
   }
-  renderStagePanel();
+  refreshPanels();
 }
 
 /** Start a capture on the target's channel — the listening half of the chain. */
@@ -1932,7 +2181,7 @@ async function onStartCaptureAfterBurst(channel) {
   try {
     await capture.start({ channel, durationMs: 20000 });
     log('ev', `capture: listening on ch${channel} for the rejoin — 20 s`);
-    renderStagePanel();
+    refreshPanels();
     startCapTicker();
   } catch (e) {
     log('err', 'capture after burst: ' + e.message);
@@ -1948,7 +2197,7 @@ async function onDeauthStop() {
     log('err', 'deauth stop: ' + e.message);
   }
   txRunning = false;
-  renderStagePanel();
+  refreshPanels();
 }
 
 /** MouseJack: send nRF24 packets at a receiver. */
@@ -1967,7 +2216,7 @@ async function onMousejackSend() {
   state.mjSent = 0;
   state.mjChannel = ch;
   state.mjResult = null;
-  renderStagePanel();
+  refreshPanels();
 
   for (let i = 0; i < count; i++) {
     try {
@@ -1991,12 +2240,12 @@ async function onMousejackSend() {
   if (!state.mjResult) {
     state.mjResult = { sent: false, count: 0, channel: ch };
   }
-  renderStagePanel();
+  refreshPanels();
 }
 
 async function onBridgeTest() {
   bridgeError = null; bridgeStatus = null;
-  renderStagePanel();
+  renderSettingsPanel(); refreshPanels();
   try {
     bridgeStatus = await bridgeClient().health();
     log('ev', `bridge: hashcat ${bridgeStatus.hashcat}, ${(bridgeStatus.wordlists || []).length} wordlist(s)`);
@@ -2004,7 +2253,7 @@ async function onBridgeTest() {
     bridgeError = e.message;
     log('err', 'bridge: ' + e.message);
   }
-  renderStagePanel();
+  renderSettingsPanel(); refreshPanels();
 }
 
 function onExtractHandshakes() {
@@ -2024,7 +2273,7 @@ function onExtractHandshakes() {
   if (handshakeResult.incomplete.length) {
     log('ev', `${handshakeResult.incomplete.length} key exchange(s) were incomplete`);
   }
-  renderStagePanel();
+  refreshPanels();
 }
 
 // ── import a capture from outside the app ────────────────────────────────────
@@ -2067,10 +2316,15 @@ async function onImportPickBytes(bytes, name) {
       return;
     }
 
-    // A 22000 import carries no frames, so analysisPlan is left alone: there is
-    // nothing to analyze, and inventing targets would put fiction on the screen.
+    // A 22000 import carries no frames, so analyzeResult/analysisPlan are left alone:
+    // there is nothing to analyze, and inventing targets would put fiction on the
+    // screen. A capture with frames is analyzed like the Analyze step would, and the
+    // plan is built from that result — `analyzeChunks` returns the RESULT (aps,
+    // probes, clients), not a plan. Assigning it to `analysisPlan` directly left the
+    // page with no `targets` and threw on `.length`.
     if (r.chunks.length) {
-      analysisPlan = analyzeChunks(r.chunks);
+      analyzeResult = analyzeChunks(r.chunks);
+      analysisPlan = plan(analyzeResult);
       log('ev', `import: ${analysisPlan.targets.length} target(s) in the file`);
     }
     importedCapture = { name, kind: r.kind, chunks: r.chunks, meta: r.meta, warnings: r.warnings };
@@ -2155,7 +2409,7 @@ function revealCrackAfterImport() {
   $('#consoleCard3')?.classList.remove('hidden');
   state.stage = 'attack';
   renderStages();
-  renderStagePanel();
+  refreshPanels();
 }
 
 async function onCrackRun() {
@@ -2169,7 +2423,7 @@ async function onCrackRun() {
 
   crackRunning = true;
   crackJob = { state: 'submitting', job_id: '' };
-  renderStagePanel();
+  refreshPanels();
 
   const cs = crackStrategy();
   const steps = [];
@@ -2186,7 +2440,7 @@ async function onCrackRun() {
     const step = steps[i];
     const stepLabel = `[${i + 1}/${steps.length}] ${step.label}`;
     crackJob = { state: `dictionary`, step: stepLabel, job_id: crackJob?.job_id || '' };
-    renderStagePanel();
+    refreshPanels();
 
     try {
       log('ev', `crack: starting step ${stepLabel}`);
@@ -2198,7 +2452,7 @@ async function onCrackRun() {
         mask: step.mask,
         onProgress: (s) => {
           crackJob = { ...s, step: stepLabel, job_id: crackJob?.job_id || s.job_id || '' };
-          renderStagePanel();
+          refreshPanels();
         },
       });
 
@@ -2229,7 +2483,7 @@ async function onCrackRun() {
   }
   // Release wake lock — crack done, phone can sleep again
   if (wakeLock) { try { wakeLock.release(); } catch {} }
-  renderStagePanel();
+  refreshPanels();
 }
 
 // ── wardrive panel ────────────────────────────────────────────────────────────
@@ -2356,11 +2610,242 @@ function resetAll() {
 
   // Re-render everything
   renderStages();
-  renderStagePanel();
+  refreshPanels();
   log('ev', 'app reset');
 }
 
 // ── boot ──────────────────────────────────────────────────────────────────────
+
+// ── pages ────────────────────────────────────────────────────────────────────
+//
+// The app was one long scroll: every card, every panel, all on one page. On a
+// phone that means whatever you want is always further down than what you are
+// looking at, and two unrelated radios — WiFi and nRF24 — sat in the same column
+// as the handshake importer. So the shell is now a hub plus five sections; the
+// markup for them lives in index.html and the bar below is built from this list.
+//
+// A page cannot exist without a tab (or it is unreachable) and a tab cannot point
+// at a page that is not there — that pairing is the list, not two lists.
+const PAGE_TABS = [
+  { id: 'home',    label: 'Home',    icon: 'home'     },
+  { id: 'capture', label: 'Capture', icon: 'capture'  },
+  { id: 'attacks', label: 'Attacks', icon: 'attack'   },
+  { id: 'crack',   label: 'Crack',   icon: 'key'      },
+  { id: 'logs',    label: 'Logs',    icon: 'terminal' },
+];
+const PAGE_KEY = 'xixchil-page';
+
+/** The last section you were on, ignoring Settings — so the gear can put you back. */
+let lastSection = 'home';
+
+/** Show one page and repaint what it owns. `settings` is reached by the gear. */
+function setPage(id) {
+  if (!PAGE_TABS.some((t) => t.id === id) && id !== 'settings') id = 'home';
+  if (id !== 'settings') lastSection = id;
+  try { localStorage.setItem(PAGE_KEY, id); } catch (e) {}
+  document.querySelectorAll('.page').forEach((p) => p.classList.toggle('active', p.id === 'page-' + id));
+  document.querySelectorAll('#tabbar .tab').forEach((t) => {
+    const on = t.dataset.page === id;
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-selected', String(on));
+  });
+  $('#gearBtn')?.classList.toggle('on', id === 'settings');
+  renderPage(id);
+}
+
+function renderPage(id) {
+  if (id === 'home')           renderHub();
+  else if (id === 'capture') { renderStages(); renderStagePanel(); renderAnalyzerCard(); }
+  else if (id === 'attacks')   renderAttackPanel($('#attackPanel'), { exclude: 'crack' });
+  else if (id === 'crack')     renderCrackPanel();
+  else if (id === 'settings')  renderSettingsPanel();
+}
+
+// Every state change repaints every panel. Cheap (they are string builds) and it
+// removes a whole class of bug: a panel that was correct when the state changed
+// and stale by the time you looked at it. The flag is insurance — a repaint that
+// re-enters itself would spin forever on the phone.
+let refreshing = false;
+function refreshPanels() {
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    renderHub();
+    renderStagePanel();
+    renderAnalyzerCard();
+    renderAttackPanel($('#attackPanel'), { exclude: 'crack' });
+    renderCrackPanel();
+  } finally {
+    refreshing = false;
+  }
+}
+
+/** The hub: what is connected, and the way in to everything else. */
+function renderHub() {
+  const card = $('#hubCard'), acts = $('#hubActions'), grid = $('#hubModules');
+  if (!card || !acts || !grid) return;
+  card.classList.remove('hidden');
+
+  const connected = !document.getElementById('consoleCard')?.classList.contains('hidden');
+  const all = attackList(attackContext());
+  const ready = all.filter((x) => x.ready).length;
+  const chunks = capture?.writer?.chunks?.length || 0;
+  const capLine = capture?.running ? `capturing · ${chunks} chunk(s)`
+    : chunks ? `${chunks} chunk(s) buffered` : 'idle';
+  const bridgeLine = bridgeStatus?.ok ? 'bridge reachable'
+    : bridgeError ? 'bridge unreachable' : 'not tested';
+  const dongleLine = ($('#dongleStatus')?.textContent || 'not connected').trim();
+  const wardriving = !!wardriveActive();
+
+  acts.innerHTML = [
+    { page: 'capture', icon: 'capture',  label: 'Capture' },
+    { page: 'attacks', icon: 'attack',   label: 'Attacks' },
+    { page: 'crack',   icon: 'key',      label: 'Crack'   },
+    { page: 'logs',    icon: 'terminal', label: 'Logs'    },
+  ].map((x) => `<button class="chip" data-page="${x.page}">${Icon(x.icon, { size: 15 })}${x.label}</button>`).join('');
+
+  const tiles = [
+    { page: 'home',    icon: 'device',  name: 'Board',   sub: connected ? 'linked' : 'offline',          on: connected },
+    { page: 'capture', icon: 'capture', name: 'Capture', sub: capLine,                                   on: !!capture?.running },
+    { page: 'capture', icon: 'scan',    name: 'Wardrive',sub: wardriving ? 'running' : 'idle',           on: wardriving },
+    { page: 'attacks', icon: 'attack',  name: 'Attacks', sub: `${ready} of ${all.length} ready`,         on: ready > 0 },
+    { page: 'attacks', icon: 'plug',    name: 'Dongle',  sub: dongleLine,    scroll: 'dongleCard',       on: dongleLine.startsWith('linked') },
+    { page: 'crack',   icon: 'key',     name: 'Crack',   sub: bridgeLine,                                on: !!bridgeStatus?.ok },
+  ];
+  grid.innerHTML = tiles.map((t) => `
+    <button class="mod${t.on ? ' on' : ''}" data-page="${t.page}"${t.scroll ? ` data-scroll="${t.scroll}"` : ''}>
+      <span class="modicon">${Icon(t.icon, { size: 18 })}</span>
+      <span class="modname">${escapeHtml(t.name)}</span>
+      <span class="modsub">${escapeHtml(t.sub)}</span>
+    </button>`).join('');
+}
+
+/** The Crack page draws the same attack card, narrowed to the one attack. */
+function renderCrackPanel() {
+  renderAttackPanel($('#crackPanel'), {
+    only: 'crack',
+    head: {
+      icon: 'key',
+      name: 'Password cracking',
+      sub: 'Take a captured handshake apart and search a wordlist for the passphrase. The phone ' +
+           'extracts; the GPU box searches.',
+    },
+  });
+}
+
+/** The channel analyzer: a listening tool, so it lives on Capture, not Attacks. */
+function renderAnalyzerCard() {
+  const box = $('#analyzerPanel');
+  if (!box) return;
+  box.innerHTML = `
+    <div class="pnlnote">Sweeps channels 1–11 and counts packets per channel, so a capture can be
+      given a quiet one.</div>
+    ${analyzerResult && !analyzerRunning ? analyzerResultHtml(analyzerResult) : ''}
+    <div class="row" style="margin-top:6px">
+      <button id="anScan" class="primary" ${analyzerRunning ? 'disabled' : ''}>
+        ${Icon('scan', { size: 16 })}${analyzerRunning
+          ? `Scanning (${analyzerResult?.currentChannel ? analyzerResult.currentChannel + '/11' : '0/11'})`
+          : 'Scan channels'}
+      </button>
+      ${analyzerRunning ? `<button id="anStop" class="ghost" style="font-size:12px">${Icon('stop', { size: 14 })}Stop</button>` : ''}
+    </div>`;
+  $('#anScan')?.addEventListener('click', onAnalyzerScan);
+  $('#anStop')?.addEventListener('click', onAnalyzerStop);
+}
+
+// ── settings: the bridge ─────────────────────────────────────────────────────
+//
+// Set once and left alone, so it does not belong in the middle of a working page.
+// The ids are the ones the old attack panel used, so nothing about the bridge
+// itself changed — only where it is configured, and both pages that need the
+// bridge link here rather than each carrying their own copy.
+
+function bridgeConfigHtml() {
+  const cfg = bridgeConfig();
+  return `
+    <div class="sechead">${Icon('link', { size: 16 })} Crack bridge</div>
+    <div class="pnlnote">The search runs on the GPU box, not on this phone — this phone extracts
+      the handshake, the bridge searches the wordlist.</div>
+    <div class="fields">
+      <label class="field">
+        <span>Bridge URL</span>
+        <input id="brUrl" type="url" inputmode="url" autocapitalize="off" spellcheck="false"
+               value="${escapeHtml(cfg.url)}" placeholder="${escapeHtml(BRIDGE_DEFAULT_URL)}">
+        <select id="brUrlSelect" style="margin-top:4px;font-size:12px;width:100%">
+          <option value="">${bridgeUrlHistory().length ? '— past URLs —' : '— no history yet —'}</option>
+          ${bridgeUrlHistory().map((u) => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join('')}
+        </select>
+      </label>
+      <label class="field">
+        <span>Token</span>
+        <input id="brToken" type="password" autocapitalize="off" spellcheck="false"
+               value="${escapeHtml(cfg.token)}" placeholder="from ~/projects/crackbridge/token">
+      </label>
+    </div>
+    <div class="row">
+      <button id="brTest" class="ghost">${Icon('link', { size: 18 })}Test connection</button>
+    </div>
+    <div id="brState">${bridgeStateHtml()}</div>`;
+}
+
+function renderSettingsPanel() {
+  const box = $('#settingsPanel');
+  if (!box) return;
+  box.innerHTML = bridgeConfigHtml();
+  wireBridgeConfig();
+}
+
+function wireBridgeConfig() {
+  $('#brUrl')?.addEventListener('change', (e) => {
+    saveBridgeUrl(e.target.value);
+    localStorage.setItem('bridgeUrl', e.target.value.trim());
+    bridgeStatus = null; bridgeError = null;
+    renderSettingsPanel(); refreshPanels();
+  });
+  $('#brUrlSelect')?.addEventListener('change', (e) => {
+    const val = e.target.value;
+    if (!val) return;
+    const input = $('#brUrl');
+    if (input) input.value = val;
+    saveBridgeUrl(val);
+    localStorage.setItem('bridgeUrl', val.trim());
+    e.target.value = '';
+    bridgeStatus = null; bridgeError = null;
+    renderSettingsPanel(); refreshPanels();
+  });
+  $('#brToken')?.addEventListener('change', (e) => {
+    localStorage.setItem('bridgeToken', e.target.value.trim());
+    bridgeStatus = null; bridgeError = null;
+    renderSettingsPanel(); refreshPanels();
+  });
+  $('#brTest')?.addEventListener('click', onBridgeTest);
+}
+
+/** The quick scan: ask the linked dongle what it can hear, in one tap.
+ *
+ *  If nothing is linked this says so instead of quietly logging a command that
+ *  cannot work — the old behaviour looked identical to a successful send. */
+async function onDongleQuickScan() {
+  const btn = $('#dongleQuickScan');
+  const rest = () => { if (btn) { btn.disabled = false; btn.innerHTML = Icon('scan', { size: 18 }) + 'Scan what it hears'; } };
+  // One tap means one tap: find the dongle and link it first if nobody has yet.
+  if (!dongleLinked()) {
+    dlog('nothing linked yet — looking for the dongle first');
+    await dongleScan();
+  }
+  if (!dongleLinked()) {
+    // Say it where he is looking. This is the button he taps when nothing happens,
+    // so it has to be the thing that explains itself — a log line under the fold
+    // is indistinguishable from a dead button.
+    renderDongleTable([], 'No dongle linked — plug the nRF52840 into the phone, then tap Find dongle.');
+    dlog('not linked — no dongle on the USB port');
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.innerHTML = Icon('scan', { size: 18 }) + 'Listening…'; }
+  dlog('listening…');
+  try { await dongleDevices(); } finally { rest(); }
+}
+
 function boot() {
   $('#connPill').innerHTML = '<span class="dot"></span>offline';
   $('#refreshBtn').innerHTML = Icon('refresh', { size: 18 }) + 'Scan';
@@ -2384,6 +2869,127 @@ function boot() {
   // empty; verify_ui.mjs fails on a blank one).
   $('#importBtn').innerHTML = Icon('save', { size: 18 }) + 'Choose file…';
   $('#importBtn').addEventListener('click', () => $('#importFile').click());
+
+  // ── dongle lane (nRF52840 / LOGITacker) ─────────────────────────────────────
+  // Labels live here like every other button: index.html ships them empty and
+  // verify_ui.mjs fails on a blank one.
+  $('#gearBtn').innerHTML      = Icon('gear', { size: 12 });
+  $('#dongleScan').innerHTML     = Icon('refresh', { size: 18 }) + 'Find dongle';
+  $('#dongleQuickScan').innerHTML = Icon('scan', { size: 18 }) + 'Scan what it hears';
+  $('#dongleSend').innerHTML     = Icon('chevron', { size: 18 }) + 'Send';
+  $('#mjScriptString').innerHTML = Icon('plug', { size: 18 }) + 'Write text';
+  $('#mjScriptPress').innerHTML  = Icon('plug', { size: 18 }) + 'Key combo';
+  $('#mjScriptDelay').innerHTML  = Icon('plug', { size: 18 }) + 'Delay';
+  $('#mjScriptShow').innerHTML   = Icon('save', { size: 18 }) + 'Show script';
+  $('#mjScriptStore').innerHTML  = Icon('save', { size: 18 }) + 'Save to flash';
+  $('#mjScriptBuild').innerHTML  = Icon('chevron', { size: 18 }) + 'Rebuild';
+  $('#mjScriptClear').innerHTML  = Icon('unlink', { size: 18 }) + 'Start fresh';
+
+  $('#dongleScan').addEventListener('click', dongleScan);
+  $('#dongleQuickScan').addEventListener('click', onDongleQuickScan);
+  $('#dongleSend').addEventListener('click', () => {
+    const c = $('#dongleCmd').value.trim();
+    if (c) dongleRun(c);
+  });
+  $('#dongleCmd').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const c = $('#dongleCmd').value.trim();
+    if (c) { e.preventDefault(); dongleRun(c); }
+  });
+  // ── command picker ──────────────────────────────────────────────────────────
+  // Brad does not know LOGITacker's command language and the shell has no `help`
+  // to teach it, so the vocabulary lives in a dropdown. Picking one fills the box
+  // below, which stays editable: the entries carry <placeholders> that have to be
+  // replaced before sending, and nothing here invents a command that isn't in the
+  // firmware's own documentation.
+  const cmdPick = $('#dongleCmdPick');
+  if (cmdPick) {
+    cmdPick.innerHTML = '<option value="">Pick a command…</option>';
+    const groups = new Map();
+    for (const c of LOGITACKER_COMMANDS) {
+      let og = groups.get(c.group);
+      if (!og) { og = document.createElement('optgroup'); og.label = c.group; groups.set(c.group, og); cmdPick.appendChild(og); }
+      const o = document.createElement('option');
+      o.value = c.cmd;
+      o.textContent = `${c.desc}  ·  ${c.cmd}`;   // what it does first — that's the part that helps
+      og.appendChild(o);
+    }
+    cmdPick.addEventListener('change', () => {
+      if (!cmdPick.value) return;
+      $('#dongleCmd').value = cmdPick.value;
+      cmdPick.selectedIndex = 0;                  // so the same one can be picked again
+      $('#dongleCmd').focus();
+    });
+  }
+
+  // Key names as autocomplete on the combo box rather than a wall of buttons.
+  const keyList = $('#mjKeyList');
+  if (keyList) keyList.innerHTML = PRESS_KEYS.map((k) => `<option value="${k}"></option>`).join('');
+
+  // ── prebuilt scripts ────────────────────────────────────────────────────────
+  const scriptPick = $('#mjScriptPick');
+  if (scriptPick) {
+    scriptPick.innerHTML = '<option value="">Pick a ready-made script…</option>';
+    for (const s of PREBUILT_SCRIPTS) {
+      const o = document.createElement('option');
+      o.value = s.id;
+      o.textContent = `${s.name} — ${s.desc}`;
+      scriptPick.appendChild(o);
+    }
+    scriptPick.addEventListener('change', async () => {
+      const s = PREBUILT_SCRIPTS.find((x) => x.id === scriptPick.value);
+      scriptPick.selectedIndex = 0;
+      if (s) await buildScript(s);
+    });
+  }
+  $('#mjScriptBuild').addEventListener('click', async () => {
+    const s = PREBUILT_SCRIPTS.find((x) => x.id === lastScriptPick);
+    if (s) await buildScript(s);
+    else dlog('Pick a script from the list first.');
+  });
+  $('#mjScriptClear').addEventListener('click', async () => {
+    const r = await dongleSession.scriptClear();
+    dlog(`> script clear\n${(r.body || '').trim() || '(the script is now empty)'}`);
+  });
+
+  // The script subcommands build a keystroke-injection script on the dongle.
+  // Note: this APPENDS to the script. Firing it at a target is a separate step,
+  // and the command that does that has not been read off the shell yet — use the
+  // raw command box for anything beyond these, rather than guessing a name.
+  $('#mjScriptString').addEventListener('click', async () => {
+    const text = $('#mjScriptText').value;
+    if (!text) return;
+    const r = await dongleSession.scriptString(text);
+    dlog(`> script string …\n${r.body || '(appended)'}`);
+    dongleSession.scriptShow().then((s) => dlog('script now:\n' + (s.body || '(empty)')));
+  });
+  $('#mjScriptPress').addEventListener('click', async () => {
+    const keys = $('#mjScriptText').value.trim().split(/\s+/).filter(Boolean);
+    if (!keys.length) return;
+    const r = await dongleSession.scriptPress(keys);
+    dlog(`> script press ${keys.join(' ')}\n${r.body || '(appended)'}`);
+    dongleSession.scriptShow().then((s) => dlog('script now:\n' + (s.body || '(empty)')));
+  });
+  $('#mjScriptDelay').addEventListener('click', async () => {
+    const ms = parseInt($('#mjScriptText').value, 10);
+    if (!Number.isFinite(ms)) return;
+    const r = await dongleSession.scriptDelay(ms);
+    dlog(`> script delay ${ms}\n${r.body || '(appended)'}`);
+  });
+  $('#mjScriptShow').addEventListener('click', async () => {
+    const r = await dongleSession.scriptShow();
+    dlog('script:\n' + (r.body || '(empty)'));
+  });
+  $('#mjScriptStore').addEventListener('click', async () => {
+    const name = $('#mjScriptName').value.trim();
+    if (!name) { dlog('Give the script a name first — the dongle keeps them by name.'); return; }
+    const r = await dongleSession.scriptStore(name);
+    // The shell refuses to overwrite a stored name; its own words are the answer.
+    dlog(`> script store "${name}"\n${(r.body || '').trim() || '(stored)'}`);
+    if (!r.timedOut) dlog('scripts on the dongle:\n' + (((await dongleSession.scriptList()).body) || '(none)').trim());
+  });
+
+
   $('#importFile').addEventListener('change', (e) => {
     const f = e.target.files?.[0];
     // Clear the input so picking the same file twice in a row still fires.
@@ -2426,7 +3032,7 @@ function boot() {
   }
 
   renderStages();
-  renderStagePanel();
+  refreshPanels();
   setConnected(false);
   toggleWardriveMode(false);
   log('ev', 'ready');
@@ -2455,7 +3061,7 @@ function boot() {
       if (!bridgeStatus?.ok || bridgeStatus.hashcat !== h.hashcat) {
         bridgeStatus = h;
         bridgeError = null;
-        renderStagePanel();
+        refreshPanels();
         log('ev', `bridge keepalive: ${h.hashcat} ready`);
       }
     } catch {
@@ -2463,6 +3069,36 @@ function boot() {
     }
   }, 30000);
 
+  // ── the page bar ────────────────────────────────────────────────────────────
+  const tabbar = $('#tabbar');
+  if (tabbar) {
+    tabbar.innerHTML = PAGE_TABS.map((t) => `
+      <button class="tab" data-page="${t.id}" role="tab" aria-selected="false" aria-label="${t.label}">
+        ${Icon(t.icon, { size: 19 })}<span>${t.label}</span>
+      </button>`).join('');
+  }
+  // One delegated handler for every jump-to-page control: the tabs, the hub chips,
+  // the hub tiles, and any "go there" button a panel grows later.
+  document.addEventListener('click', (e) => {
+    const jump = e.target.closest('[data-page]');
+    if (jump && !jump.disabled) {
+      e.preventDefault();
+      setPage(jump.dataset.page);
+      // A tile may name the thing on that page it is talking about, so tapping
+      // "Dongle — not connected" lands on the dongle, not at the top of Attacks.
+      const land = jump.dataset.scroll;
+      if (land) setTimeout(() => document.getElementById(land)?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 60);
+    }
+  });
+  // The gear is a toggle, not a one-way door: tapping it off Settings returns you to
+  // the section you were reading rather than dumping you back on Home.
+  $('#gearBtn')?.addEventListener('click', () => {
+    setPage($('#page-settings')?.classList.contains('active') ? lastSection : 'settings');
+  });
+
+  let start = 'home';
+  try { start = localStorage.getItem(PAGE_KEY) || 'home'; } catch (e) {}
+  setPage(start);
   refreshDevices();
 }
 
@@ -2575,10 +3211,16 @@ function paintPortal() {
   }
 }
 
+// The board's own band report, as it last told us (`status.bands`: "2.4" or
+// "2.4+5"). Deliberately left undefined when no device has answered yet, so the
+// portal falls back to its 2.4 GHz-only default instead of assuming a dual-band
+// radio that may not be there.
+const deviceBands = () => state.deviceInfo?.bands;
+
 function portalActionHtml(a) {
   if (!a.ready) return '';
 
-  const cands = portalScanAps ? rankTwinCandidates(portalScanAps) : [];
+  const cands = portalScanAps ? rankTwinCandidates(portalScanAps, { bands: deviceBands() }) : [];
   const pick = portalTwin;
   const armed = portalArmed;
   const armSaved = localStorage.getItem('portalArm') || '';
@@ -2678,14 +3320,14 @@ function portalActionHtml(a) {
 
 async function onPortalScan() {
   portalScanning = true;
-  renderStagePanel();
+  refreshPanels();
   try {
     // The firmware replies to /scan asynchronously, from its loop — hence the
     // generous timeout rather than a tight one.
     const resp = await request('SCAN', {}, { timeoutMs: 25000 });
     if (!resp?.ok) throw new Error(resp?.error || 'the scan was refused');
     portalScanAps = Array.isArray(resp.aps) ? resp.aps : [];
-    const cloneable = rankTwinCandidates(portalScanAps, { onlyCloneable: true }).length;
+    const cloneable = rankTwinCandidates(portalScanAps, { onlyCloneable: true, bands: deviceBands() }).length;
     log('ev', `portal: scan found ${portalScanAps.length} AP(s), ${cloneable} cloneable into a PSK twin`);
     // A fresh scan invalidates the old pick: the operator chose from what was in
     // the air at that moment, and carrying it over would silently re-target.
@@ -2695,7 +3337,7 @@ async function onPortalScan() {
     log('err', 'portal: ' + e.message);
   }
   portalScanning = false;
-  renderStagePanel();
+  refreshPanels();
 }
 
 function onPortalPickCandidate(e) {
@@ -2706,7 +3348,7 @@ function onPortalPickCandidate(e) {
 
   // selectTwinTarget refuses rather than substituting, so a refusal here is real
   // information — it is not going to quietly clone something else.
-  const sel = selectTwinTarget(portalScanAps, { ssid: ap.ssid, bssid: ap.bssid });
+  const sel = selectTwinTarget(portalScanAps, { ssid: ap.ssid, bssid: ap.bssid, bands: deviceBands() });
   if (!sel.ok) {
     portalTwin = null; portalArmed = null;
     log('err', 'portal: ' + sel.reason);
@@ -2718,7 +3360,7 @@ function onPortalPickCandidate(e) {
     localStorage.removeItem('portalPage');
     log('ev', `portal: twin target is "${sel.twin.ssid}" on channel ${sel.twin.channel}`);
   }
-  renderStagePanel();
+  refreshPanels();
 }
 
 async function onPortalStart() {
@@ -2734,14 +3376,14 @@ async function onPortalStart() {
   portalArmed = armed;
   if (!armed.armed) {
     log('err', 'portal: ' + armed.problems[0]);
-    renderStagePanel();
+    refreshPanels();
     return;
   }
 
   localStorage.setItem('portalArm', token);
   portalRunning = true;
   portalStatus = { running: true, ap_up: false, ssid: armed.ssid, channel: armed.channel };
-  renderStagePanel();
+  refreshPanels();
 
   try {
     const resp = await request('PORTAL_START', {
@@ -2759,7 +3401,7 @@ async function onPortalStart() {
     portalStatus = { error: e.message };
     log('err', 'portal: ' + e.message);
   }
-  renderStagePanel();
+  refreshPanels();
   if (portalRunning) pollPortalStatus();
 }
 
@@ -2775,7 +3417,7 @@ async function onPortalStop() {
     portalStatus = { error: e.message };
     log('err', 'portal: ' + e.message);
   }
-  renderStagePanel();
+  refreshPanels();
 }
 
 async function pollPortalStatus() {
@@ -2799,7 +3441,7 @@ async function onPortalPushPage() {
 
   const bytes = new TextEncoder().encode(html);
   portalPushResult = { phase: 'pushing' };
-  renderStagePanel();
+  refreshPanels();
 
   try {
     const b = await request('PORTAL_PAGE_BEGIN', {}, { timeoutMs: 8000 });
@@ -2824,7 +3466,7 @@ async function onPortalPushPage() {
     portalPushResult = { phase: 'error', error: e.message };
     log('err', 'portal: ' + e.message);
   }
-  renderStagePanel();
+  refreshPanels();
 }
 
 // ── Karma handlers ──────────────────────────────────────────────────────────
@@ -2872,7 +3514,7 @@ async function onKarmaStart() {
 
   karmaRunning = true;
   karmaResult = { phase: 'starting', channel, mode, matched: 0, sent: 0, failed: 0 };
-  renderStagePanel();
+  refreshPanels();
 
   try {
     const resp = await request('PROBE_REPLY_START', {
@@ -2893,7 +3535,7 @@ async function onKarmaStart() {
       allowlist_n: resp.allowlist_n,
     };
     log('ev', `karma: started on ch${channel}, mode=${mode}, ${ssids.length} name(s)`);
-    renderStagePanel();
+    refreshPanels();
 
     // Poll status until it stops (hard cap ~120s, or user stops)
     pollKarmaStatus();
@@ -2901,7 +3543,7 @@ async function onKarmaStart() {
     karmaResult = { ...karmaResult, note: e.message };
     log('err', 'karma start: ' + e.message);
     karmaRunning = false;
-    renderStagePanel();
+    refreshPanels();
   }
 }
 
@@ -2922,7 +3564,7 @@ async function pollKarmaStatus() {
       karmaRunning = false;
       log('ev', `karma: finished — ${st?.matched ?? 0} matched, ${st?.sent ?? 0} sent`);
     }
-    renderStagePanel();
+    refreshPanels();
     if (karmaRunning) setTimeout(pollKarmaStatus, 1500);
   } catch (e) {
     log('err', 'karma poll: ' + e.message);
@@ -2943,12 +3585,12 @@ async function onKarmaStop() {
       elapsed_ms: st?.elapsed_ms || 0,
     };
     log('ev', `karma: stopped — ${st?.matched ?? 0} matched, ${st?.sent ?? 0} sent`);
-    renderStagePanel();
+    refreshPanels();
   } catch (e) {
     log('err', 'karma stop: ' + e.message);
     karmaRunning = false;
     karmaResult = { ...(karmaResult || {}), note: e.message };
-    renderStagePanel();
+    refreshPanels();
   }
 }
 
@@ -3045,7 +3687,7 @@ async function onManaStart() {
 
   manaRunning = true;
   manaResult = { phase: 'starting', channel, pool_size: beacons.length, sent: 0, failed: 0 };
-  renderStagePanel();
+  refreshPanels();
 
   try {
     const resp = await request('BEACON_POOL_START', {
@@ -3061,14 +3703,14 @@ async function onManaStart() {
       pool_size: resp.pool_size,
     };
     log('ev', `mana: started on ch${channel}, ${beacons.length} beacon(s), ${interval}ms interval`);
-    renderStagePanel();
+    refreshPanels();
 
     pollManaStatus();
   } catch (e) {
     manaResult = { ...manaResult, note: e.message };
     log('err', 'mana start: ' + e.message);
     manaRunning = false;
-    renderStagePanel();
+    refreshPanels();
   }
 }
 
@@ -3088,7 +3730,7 @@ async function pollManaStatus() {
       manaRunning = false;
       log('ev', `mana: finished — ${st?.sent ?? 0} sent, ${st?.failed ?? 0} failed`);
     }
-    renderStagePanel();
+    refreshPanels();
     if (manaRunning) setTimeout(pollManaStatus, 1500);
   } catch (e) {
     log('err', 'mana poll: ' + e.message);
@@ -3108,12 +3750,12 @@ async function onManaStop() {
       elapsed_ms: st?.elapsed_ms || 0,
     };
     log('ev', `mana: stopped — ${st?.sent ?? 0} sent`);
-    renderStagePanel();
+    refreshPanels();
   } catch (e) {
     log('err', 'mana stop: ' + e.message);
     manaRunning = false;
     manaResult = { ...(manaResult || {}), note: e.message };
-    renderStagePanel();
+    refreshPanels();
   }
 }
 
@@ -3123,7 +3765,7 @@ async function onAnalyzerScan() {
   if (analyzerRunning) return;
   analyzerRunning = true;
   analyzerResult = { currentChannel: 0 };
-  renderStagePanel();
+  refreshPanels();
 
   try {
     const resp = await request('CHANNEL_ANALYZE', {
@@ -3144,7 +3786,7 @@ async function onAnalyzerScan() {
     log('err', 'channel analyzer: ' + e.message);
   }
   analyzerRunning = false;
-  renderStagePanel();
+  refreshPanels();
 }
 
 async function onAnalyzerStop() {
@@ -3158,5 +3800,5 @@ async function onAnalyzerStop() {
     log('err', 'analyzer stop: ' + e.message);
   }
   analyzerRunning = false;
-  renderStagePanel();
+  refreshPanels();
 }

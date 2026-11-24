@@ -261,7 +261,7 @@ static void ward_rx_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
 // no PSRAM, radio refused).
 static bool wardrive_start(uint8_t channel) {
     if (g_ward_state != WARD_IDLE) return false;
-    if (channel < 1 || channel > 14) return false;
+    if (!wifi_channel_ok(channel)) return false;
 
     if (!ward_ring_alloc()) return false;
 

@@ -41,6 +41,7 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <ArduinoJson.h>
+#include "protocol.h"    // wifi_channel_ok — the one band-plan policy
 
 // ── constants ───────────────────────────────────────────────────────────────
 
@@ -236,7 +237,7 @@ static bool probe_reply_start(const char* template_hex, uint8_t channel,
                               const char** allowlist, uint8_t allowlist_count,
                               const char* mode, const char** why) {
     if (g_pr_on) { *why = "probe reply already running"; return false; }
-    if (channel < 1 || channel > 14) { *why = "channel must be 1..14"; return false; }
+    if (!wifi_channel_ok(channel)) { *why = wifi_channel_hint(); return false; }
 
     size_t tlen = 0;
     if (!pr_parse_hex(template_hex, &tlen)) {

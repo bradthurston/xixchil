@@ -38,6 +38,7 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <ArduinoJson.h>
+#include "protocol.h"    // wifi_channel_ok — the one band-plan policy
 
 // Bounds. These are the safety design — see the header comment.
 #define TX_MIN_FRAME        24        // a bare 802.11 header; shorter is not a frame
@@ -111,7 +112,7 @@ static bool tx_start(const char* hex, int channel, int count, int interval_ms,
     if (g_tx_on) { *why = "burst already running"; return false; }
 
     // 2.4 GHz only — the S3 has no 5 GHz radio. Refuse, never remap.
-    if (channel < 1 || channel > 14) { *why = "channel must be 1..14"; return false; }
+    if (!wifi_channel_ok(channel)) { *why = wifi_channel_hint(); return false; }
 
     size_t len = 0;
     if (!tx_parse_hex(hex, &len)) { *why = "hex must be an even-length 24..1500 byte frame"; return false; }

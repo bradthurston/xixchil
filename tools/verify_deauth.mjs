@@ -19,8 +19,12 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const work = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'deauth-'));
-// attack.js imports nothing and is written as browser ESM, so stage it as .mjs.
-writeFileSync(join(work, 'attack.mjs'), readFileSync(join(here, '..', 'app', 'www', 'js', 'attack.js')));
+// attack.js is browser ESM and imports band.js, so stage both as .mjs — the
+// staged copy's import has to be re-pointed at the staged band copy.
+writeFileSync(join(work, 'attack.mjs'),
+  readFileSync(join(here, '..', 'app', 'www', 'js', 'attack.js'), 'utf8')
+    .replace(/from '\.\/band\.js'/g, "from './band.mjs'"));
+writeFileSync(join(work, 'band.mjs'), readFileSync(join(here, '..', 'app', 'www', 'js', 'band.js')));
 const { buildDeauth, buildBurst, macToBytes, bytesToMac, SUBTYPE_DEAUTH, BROADCAST } =
   await import(join(work, 'attack.mjs'));
 

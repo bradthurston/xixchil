@@ -107,14 +107,22 @@
 
   /**
    * Return a single .22000 text blob for hashcat -m 22000.
-   * Each line: hash:hash (the SSID suffix format).
+   *
+   * ONE hash per line, and NOTHING appended to a line. A mode-22000 line is
+   * exactly nine `*`-separated fields; appending anything to it makes hashcat
+   * reject the whole file with "Token length exception" and load ZERO hashes —
+   * which is indistinguishable from a wordlist that found nothing. This used to
+   * write each hash twice glued with a colon (`hash:hash`), and two real
+   * sessions came back "nothing found" because of it. Do not re-add a suffix.
+   *
+   * Duplicated lines are collapsed. A repeated hash inflates hashcat's
+   * denominator without searching anything new (2 unique hashes reported as
+   * "2/4 cracked").
    */
   function export22000(sessionId) {
     const records = loadSession(sessionId);
-    return records
-      .filter((r) => r.hash22000)
-      .map((r) => r.hash22000 + ':' + r.hash22000)
-      .join('\n');
+    const lines = records.filter((r) => r.hash22000).map((r) => r.hash22000);
+    return lines.length ? [...new Set(lines)].join('\n') + '\n' : '';
   }
 
   /**

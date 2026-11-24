@@ -38,6 +38,7 @@
 #include <WiFiUdp.h>
 #include <WebServer.h>
 #include <esp_wifi.h>
+#include "protocol.h"    // wifi_channel_ok — the one band-plan policy
 #include <esp_netif.h>
 #include <esp_heap_caps.h>
 #include <esp_random.h>
@@ -323,7 +324,7 @@ static bool portal_arm_ok(const char* ssid, const char* bssid, int channel, cons
     if (!ssid) return false;
     size_t n = strlen(ssid);
     if (n == 0 || n > 32) return false;              // 802.11 §9.4.2.2 — 32 octets
-    if (channel < 1 || channel > 14) return false;   // the S3 has no 5 GHz radio
+    if (!wifi_channel_ok(channel)) return false;
     if (bssid && *bssid) {
         unsigned v[6];
         if (sscanf(bssid, "%x:%x:%x:%x:%x:%x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6) return false;

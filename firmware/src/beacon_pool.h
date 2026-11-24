@@ -29,6 +29,7 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <ArduinoJson.h>
+#include "protocol.h"    // wifi_channel_ok — the one band-plan policy
 
 // ── constants ───────────────────────────────────────────────────────────────
 
@@ -115,7 +116,7 @@ static bool bp_arm(uint8_t channel) {
 static bool beacon_pool_start(JsonArrayConst beacons, uint8_t channel,
                               const char** why) {
     if (g_bp_on) { *why = "beacon pool already running"; return false; }
-    if (channel < 1 || channel > 14) { *why = "channel must be 1..14"; return false; }
+    if (!wifi_channel_ok(channel)) { *why = wifi_channel_hint(); return false; }
 
     size_t count = beacons.size();
     if (count < 1 || count > BP_MAX_ENTRIES) {

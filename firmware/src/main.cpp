@@ -69,6 +69,28 @@ static uint32_t g_heap_boot = 0;
   #define DBG(...) do { } while (0)
 #endif
 
+// ── BLE link policy ─────────────────────────────────────────────────────────
+// BLE is the cableless fallback transport. Starting it costs ~34 KB of internal
+// heap for the BT controller — and on the ESP32-C5 that is exactly the margin
+// between the Wi-Fi stack initialising and silently not: the C5 has ~320 KB of
+// usable internal SRAM where the S3 has ~500 KB, esp_wifi_init() needs ~42 KB
+// spent contiguously, and with BLE up the firmware was left with 46 KB free.
+// The observed failure was every esp_wifi call returning 0x3001
+// (ESP_ERR_WIFI_NOT_INIT) because WiFi.mode(WIFI_STA) had failed and its return
+// value was discarded.
+//
+// So the C5 build runs serial-only. That is also what the coexistence rule at
+// the top of this file demands for sniffing: "Wi-Fi Sniffer RX + BLE" is rated
+// C1 = supported but UNSTABLE in every BLE mode. Build with -DSRC_BLE_ON_5G=1
+// to override and put the BT controller back regardless.
+#ifndef SRC_BLE_LINK
+  #ifdef HAS_5GHZ_BAND
+    #define SRC_BLE_LINK 0
+  #else
+    #define SRC_BLE_LINK 1
+  #endif
+#endif
+
 #define FW_VERSION   "0.4.0-lure"
 #define DEVICE_NAME  "SRC"          // advertised BLE name — deliberately generic
 
@@ -177,7 +199,19 @@ static void cmd_ping(uint8_t id) {
 static void cmd_status(uint8_t id) {
     JsonDocument d;
     d["fw"] = FW_VERSION;
-    d["chip"] = "ESP32-S3";
+    // Identity is read off the silicon, never a literal. This file was written
+    // for the S3, and after the C5 port a hardcoded "ESP32-S3" was a flat lie
+    // that the phone would have believed — it decides what the UI offers based
+    // on what the device says it is. The band flag comes from the build target,
+    // so a 2.4 GHz-only build cannot advertise 5 GHz it cannot reach.
+    d["chip"] = ESP.getChipModel();
+    d["chip_rev"] = ESP.getChipRevision();
+    d["cores"] = ESP.getChipCores();
+#ifdef HAS_5GHZ_BAND
+    d["bands"] = "2.4+5";
+#else
+    d["bands"] = "2.4";
+#endif
     d["proto"] = "1.0";
     d["stage"] = stage_name(g_stage);
     d["transport"] = (g_reply_ch != nullptr) ? g_reply_ch->name() : "ble_gatt";
@@ -185,6 +219,11 @@ static void cmd_status(uint8_t id) {
     d["ble_mtu"] = g_mtu;
     d["heap_free"] = ESP.getFreeHeap();
     d["heap_boot"] = g_heap_boot;
+    // The free total can look survivable while the LARGEST contiguous block is
+    // too small for esp_wifi_init() — which is precisely how the C5 ended up
+    // with a wifi stack that never initialised. Report the block size too.
+    d["heap_largest"] = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    d["ble_link"] = (bool)SRC_BLE_LINK;
     // Why the last boot happened. This is the one field that turns "the board
     // vanished mid-command" into a fact: ESP_RST_PANIC means the firmware aborted
     // (an IDF allocation failure inside the WiFi stack aborts, it does not return
@@ -320,8 +359,15 @@ static void scan_poll() {
 // all, so the right move is to take the BLE radio out of the picture for the
 // duration and put it back afterwards. It is conditional on being on a serial
 // port, because when BLE *is* the link, advertising is how the phone found us.
+#if SRC_BLE_LINK
 static void ble_pause()  { NimBLEDevice::getAdvertising()->stop(); }
 static void ble_resume() { if (!g_connected) NimBLEDevice::startAdvertising(); }
+#else
+// No BT controller was started, so there is nothing to quiet or restart. The
+// callers keep working unchanged; g_reply_ch is always the serial link here.
+static void ble_pause()  {}
+static void ble_resume() {}
+#endif
 
 static void send_frame_pcap(uint8_t chunk, const uint8_t* data, size_t len) {
     send_frame(FT_PCAP, chunk, data, len);
@@ -355,7 +401,7 @@ static void cmd_capture_start(uint8_t id, JsonDocument& args) {
 
     // 2.4 GHz only. The S3 has no 5 GHz radio, so a channel outside 1..14 is a
     // caller error and gets refused, not silently remapped onto something else.
-    if (ch < 1 || ch > 14) { send_error(id, "channel must be 1..14"); return; }
+    if (!wifi_channel_ok(ch)) { send_error(id, wifi_channel_hint()); return; }
     if (snap < 32 || snap > CAP_SNAPLEN_MAX) snap = CAP_SNAPLEN_MAX;
     if (dur == 0 || dur > CAP_MAX_MS) dur = CAP_DEFAULT_MS;
 
@@ -365,7 +411,7 @@ static void cmd_capture_start(uint8_t id, JsonDocument& args) {
     uint64_t t0 = (uint64_t)esp_timer_get_time();
 
     if (!cap_start((uint8_t)ch, dur, (uint16_t)snap)) {
-        send_error(id, "capture start failed");
+        send_error(id, g_cap_err[0] ? g_cap_err : "capture start failed");
         return;
     }
 
@@ -417,7 +463,7 @@ static void cmd_pmkid_probe_start(uint8_t id, JsonDocument& args) {
     if (ssid == nullptr || ssid[0] == '\0') { send_error(id, "ssid required"); return; }
 
     int ch = args["channel"] | (int)CAP_DEFAULT_CH;
-    if (ch < 1 || ch > 14) { send_error(id, "channel must be 1..14"); return; }
+    if (!wifi_channel_ok(ch)) { send_error(id, wifi_channel_hint()); return; }
 
     uint8_t bssid[6];
     bool bssid_set = false;
@@ -683,7 +729,7 @@ static void cmd_wardrive_start(uint8_t id, JsonDocument& args) {
     if (portal_running()) { send_error(id, "portal running — the radio is an AP"); return; }
 
     int ch = args["channel"] | (int)1;
-    if (ch < 1 || ch > 14) { send_error(id, "channel must be 1..14"); return; }
+    if (!wifi_channel_ok(ch)) { send_error(id, wifi_channel_hint()); return; }
 
     if (!wardrive_start((uint8_t)ch)) {
         send_error(id, "wardrive start failed — check PSRAM/channel");
@@ -1369,6 +1415,11 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 
 // ── Setup ───────────────────────────────────────────────────────────────────
 static void ble_start() {
+#if !SRC_BLE_LINK
+    // Return BEFORE NimBLEDevice::init(): that call is what allocates the BT
+    // controller and the ~34 KB the Wi-Fi stack needs more than it needs BLE.
+    return;
+#else
     NimBLEDevice::init(DEVICE_NAME);
     NimBLEDevice::setMTU(517);
     NimBLEDevice::setPower(9);          // max TX power — this is a radio tool
@@ -1391,6 +1442,7 @@ static void ble_start() {
     adv->setName(DEVICE_NAME);
     adv->enableScanResponse(true);
     adv->start();
+#endif
 }
 
 // ── Channel hopping ──────────────────────────────────────────────────────────
@@ -1460,13 +1512,25 @@ void setup() {
     ch_uart.begin(115200);       // the bridged UART — where a phone cable most often lands
     delay(200);
 
-    DBG("\n[src] %s  chip=ESP32-S3  psram=%u bytes\n",
-        FW_VERSION, (unsigned)psram_total());
+    DBG("\n[src] %s  chip=%s rev=%u cores=%u  flash=%u KB  psram=%u KB\n",
+        FW_VERSION, ESP.getChipModel(), (unsigned)ESP.getChipRevision(),
+        (unsigned)ESP.getChipCores(), (unsigned)(ESP.getFlashChipSize() / 1024),
+        (unsigned)(psram_total() / 1024));
     DBG("[src] device persists nothing — phone is the disk\n");
+#ifdef HAS_5GHZ_BAND
+    // The C5's USB-C socket goes to a CH343 UART bridge, so Serial *is* UART0
+    // and there is no second port for the phone to land on.
+    DBG("[src] serial: uart0 @115200 (USB-C via bridge)\n");
+#else
     DBG("[src] serial: usb_cdc + uart0 @115200\n");
+#endif
 
     ble_start();
+#if SRC_BLE_LINK
     DBG("[src] advertising as \"%s\"\n", DEVICE_NAME);
+#else
+    DBG("[src] ble link compiled out — serial only, heap kept for the wifi stack\n");
+#endif
 }
 
 void loop() {

@@ -108,9 +108,12 @@ const fakeEl = () => ({
   appendChild() {}, removeChild() {}, addEventListener() {}, setAttribute() {},
 });
 globalThis.window = {};
+// The download path (no Capacitor plugin in a test) builds an <a> and clicks it,
+// so capture what the click carried — that is the filename under test.
+let downloadedName = null;
 globalThis.document = {
   getElementById: (id) => (id === 'wardriveChannel' ? Object.assign(fakeEl(), { value: '6' }) : null),
-  createElement: () => fakeEl(),
+  createElement: () => Object.assign(fakeEl(), { click() { downloadedName = this.download; } }),
   body: fakeEl(),
   querySelector: () => null,
 };
@@ -187,7 +190,7 @@ function dataFc(fromAP) {
   return [0x88, fromAP ? 0x02 : 0x01];
 }
 
-function eapolFrame({ fromAP, keyInfo, nonce }) {
+function eapolFrame({ fromAP, keyInfo, nonce, client = CLIENT, bssid = BSSID }) {
   const eapol = new Uint8Array(99);                 // KEY_FIXED_LEN, no key data
   eapol[0] = 2;                                     // version
   eapol[1] = 3;                                     // EAPOL-Key
@@ -200,8 +203,8 @@ function eapolFrame({ fromAP, keyInfo, nonce }) {
   eapol.set(new Uint8Array(16).fill(0xa5), 81);     // MIC
   const payload = [...[0xaa, 0xaa, 0x03, 0x00, 0x00, 0x00], 0x88, 0x8e, ...eapol];
   const addrs = fromAP
-    ? [...macB(CLIENT), ...macB(BSSID), ...macB(BSSID)]     // addr1=client addr2=BSSID
-    : [...macB(BSSID), ...macB(CLIENT), ...macB('ff:ff:ff:ff:ff:ff')];
+    ? [...macB(client), ...macB(bssid), ...macB(bssid)]     // addr1=client addr2=BSSID
+    : [...macB(bssid), ...macB(client), ...macB('ff:ff:ff:ff:ff:ff')];
   return Uint8Array.from([
     ...RT_CH6,
     ...dataFc(fromAP),
@@ -470,6 +473,85 @@ check('refusals OUTSIDE a burst still end the session (a real dead board stops i
 check('and it took repeated refusals, not a single one',
   W.getStats().pollFailStreak >= 3, JSON.stringify(W.getStats().pollFailStreak));
 refuseSegment = false;
+
+// ── the switch: with the box cleared, wardrive transmits NOTHING ─────────────
+// The card now offers an off position. Off has to MEAN off: no deauth frame leaves
+// the phone, and no target is even queued — a queue that kept filling while the box
+// was clear would all fire the instant it was ticked. Off is still a working mode,
+// so the inventory half is asserted too: quiet, not broken.
+//
+// Asserted against the module, not against the label in index.html.
+
+if (W.getState() !== 'IDLE') await W.stop();
+
+const deauthBox = Object.assign(fakeEl(), { checked: false });
+globalThis.document.getElementById = (id) =>
+  (id === 'wardriveChannel' ? Object.assign(fakeEl(), { value: '6' })
+    : id === 'wardriveDeauth' ? deauthBox
+      : null);
+W.init({ request: link, log: () => {}, gps, hashStore });   // re-bind, as the app does
+
+sent.length = 0;
+await W.start();
+W.onSegmentChunk(beacon(BSSID, SSID, 6));
+W.onSegmentChunk(eapolFrame({ fromAP: false, keyInfo: 0x010a, nonce: new Uint8Array(32).fill(13) }));
+await drainIngest();
+await sleep(1400);                        // the 250 ms poll loop has had its chance
+
+check('box cleared: NO deauth frame is transmitted',
+  !sent.some((s) => s.cmd === 'deauth_now'),
+  JSON.stringify(sent.map((s) => s.cmd)));
+check('box cleared: nothing counted as a deauth',
+  W.getStats().deauthCount === 0 && W.getStats().deauthErrors === 0,
+  JSON.stringify({ sent: W.getStats().deauthCount, errors: W.getStats().deauthErrors }));
+check('box cleared: the AP and its client are STILL inventoried (off is quiet, not broken)',
+  W.getStats().seen.some((a) => a.bssid === BSSID && a.clients.includes(CLIENT)),
+  JSON.stringify(W.getStats().seen));
+
+// The box is read live, not latched at start(): tick it mid-run and the next fresh
+// sighting must be acted on, with no restart.
+const CLIENT2 = 'de:ad:be:ef:00:02';
+deauthBox.checked = true;
+W.onSegmentChunk(eapolFrame({ fromAP: false, keyInfo: 0x010a, nonce: new Uint8Array(32).fill(17),
+  client: CLIENT2 }));
+await drainIngest();
+await sleep(1400);
+check('box ticked mid-run: the next fresh sighting IS acted on, no restart needed',
+  sent.some((s) => s.cmd === 'deauth_now' && s.args?.client === macHex(CLIENT2)),
+  JSON.stringify(sent.filter((s) => s.cmd === 'deauth_now')));
+
+// the markup half — the switch has to exist in the card for any of this to be reachable
+check('index.html exposes the deauth switch in the wardrive card',
+  /id="wardriveDeauth"/.test(htmlSrc) && /Send deauths/.test(htmlSrc));
+await W.stop();
+
+// ── export filename ──────────────────────────────────────────────────────────
+// The session id is `Date.now().toString(36)` — a base-36 epoch ms, which is why
+// exports arrived as `wardrive-mwphghvd`: not an SSID, not random, just a
+// timestamp in disguise. The filename must say when, in a form a human reads.
+if (!hashRecords.length) hashRecords.push({ line: 'WPA*02*00*aa:bb:cc:dd:ee:ff*11:22:33:44:55:66*42*42*42*00' });
+
+const sid = 'mwphghvd';
+const sd = new Date(parseInt(sid, 36));
+const pad = (n) => String(n).padStart(2, '0');
+const wantStem = 'wardrive-' + sd.getFullYear() + '-' + pad(sd.getMonth() + 1) + '-' + pad(sd.getDate()) +
+  '-' + pad(sd.getHours()) + pad(sd.getMinutes()) + pad(sd.getSeconds());
+
+await W.exportSession(sid, '22000');
+check('export filename carries the capture date (2026-11-20 15:20:22 for this id)',
+  downloadedName === wantStem + '.22000', String(downloadedName) + ' vs ' + wantStem + '.22000');
+check('export filename no longer contains the raw base-36 session id',
+  !String(downloadedName).includes(sid), String(downloadedName));
+
+await W.exportSession(sid, 'json');
+check('json export uses the same dated stem, only the extension differs',
+  downloadedName === wantStem + '.json', String(downloadedName));
+
+// A renamed or imported session id is not a timestamp. It must not fall through to
+// 'Invalid Date' or an empty stem — the name is the only identifier it has.
+await W.exportSession('testsession', '22000');
+check('a session id that is not a timestamp keeps its own name in the filename',
+  downloadedName === 'wardrive-testsession.22000', String(downloadedName));
 
 console.log(`\n${pass} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -47,15 +47,18 @@ const ok = (cond, label, detail = '') => {
 // specifiers rewritten — the same staging verify_crack.mjs uses.
 
 const work = mkdtempSync(join(tmpdir(), 'verify-import-'));
-const STAGED = ['analyze', 'crack', 'pcap', 'import'];
+const STAGED = ['analyze', 'crack', 'pcap', 'import', 'analysis'];
 for (const name of STAGED) {
   const src = readFileSync(join(APP_JS, `${name}.js`), 'utf8')
-    .replace(/from '\.\/(analyze|crack|pcap|import)\.js'/g, "from './$1.mjs'");
+    .replace(/from '\.\/(analyze|crack|pcap|import|analysis)\.js'/g, "from './$1.mjs'");
   writeFileSync(join(work, `${name}.mjs`), src);
 }
 const { importCapture, parse22000, describeImport } = await import(join(work, 'import.mjs'));
 const { chunksFromPcap, radiotapLen } = await import(join(work, 'pcap.mjs'));
 const { extractHandshakes, hashFile } = await import(join(work, 'crack.mjs'));
+const { analyzeChunks } = await import(join(work, 'analyze.mjs'));
+const { plan } = await import(join(work, 'analysis.mjs'));
+const APP_SRC = readFileSync(join(APP_JS, 'app.js'), 'utf8');
 
 // ── file builders: the shapes a reader has to survive ────────────────────────
 
@@ -381,6 +384,26 @@ if (!realPath) {
   } catch (e) {
     console.log(`  note hcxpcapngtool could not run on the real capture: ${e.message}`);
   }
+
+  // ── the plan the import leaves behind ──────────────────────────────────────
+  // A capture with frames is what the Analysis stage reads, so the import has to
+  // leave a PLAN there — `analyzeChunks` returns the analyze RESULT (aps, probes,
+  // clients), and `plan()` is what turns it into targets. Assigning the result
+  // straight to `analysisPlan` left the page with no `targets` and threw on
+  // `.length`; the pick buttons the whole deauth flow hangs off never rendered.
+  const ar = analyzeChunks(real.chunks);
+  const p = plan(ar);
+  ok(!('targets' in ar), 'analyzeChunks is a result, not a plan (it has no targets)');
+  ok(Array.isArray(p.targets) && p.targets.length === ar.aps.length,
+    `plan() builds one target per AP from the imported frames (${p.targets.length}/${ar.aps.length})`);
+  ok(p.targets.length > 0 && p.targets.every((t) => t.bssid && t.action && t.action.label),
+    'every imported target carries a bssid and the single action that follows from it');
+
+  // And the call site has to agree: result first, then the plan built from it.
+  const importPath = APP_SRC.match(/if \(r\.chunks\.length\) \{[\s\S]*?\n    \}/)?.[0] || '';
+  ok(/analyzeResult = analyzeChunks\(r\.chunks\)/.test(importPath) &&
+     /analysisPlan = plan\(analyzeResult\)/.test(importPath),
+    'the import path analyses the frames and builds the plan from that result', importPath.trim());
 }
 
 // ── done ─────────────────────────────────────────────────────────────────────
