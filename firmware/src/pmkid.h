@@ -1,6 +1,6 @@
 // pmkid.h — BENCH PROBE for native PMKID harvest.
 //
-// Phase 0 of docs/plans/2026-11-20-native-pmkid-harvest.md. This is NOT the
+// Phase 0 of notes/plans/2026-11-20-native-pmkid-harvest.md. This is NOT the
 // finished module. It exists to answer three questions on real hardware:
 //
 //   Q1  Does the ESP-IDF STA stack associate to a WPA2 AP given a *bogus* PSK,

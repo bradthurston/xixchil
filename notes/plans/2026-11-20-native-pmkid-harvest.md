@@ -13,7 +13,7 @@ premise of Phase 1 as originally written did not survive the bench.
 
 ## Why this, and why first
 
-The attack spine in `docs/POSITIONING.md` opens with "PMKID passive first". It is
+The attack spine in `notes/POSITIONING.md` opens with "PMKID passive first". It is
 the one item on that spine we do not own — the positioning doc admits it:
 "PMKID-only passive path depends on their firmware. Ours needs it natively."
 

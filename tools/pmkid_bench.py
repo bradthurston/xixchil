@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bench probe for native PMKID harvest (Phase 0).
 
-Phase 0 of docs/plans/2026-11-20-native-pmkid-harvest.md. Arms the firmware's
+Phase 0 of notes/plans/2026-11-20-native-pmkid-harvest.md. Arms the firmware's
 pmkid_probe_start against one AP, pulls the capture, and answers the three
 go/no-go questions by looking at the frames:
 

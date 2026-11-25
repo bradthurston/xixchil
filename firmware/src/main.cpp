@@ -449,7 +449,7 @@ static void cmd_capture_stats(uint8_t id) {
 }
 
 // ── PMKID probe (bench only) ────────────────────────────────────────────────
-// Phase 0 of docs/plans/2026-11-20-native-pmkid-harvest.md. Associates to a
+// Phase 0 of notes/plans/2026-11-20-native-pmkid-harvest.md. Associates to a
 // named AP with a dummy PSK while the promiscuous capture runs, to answer
 // whether the STA stack associates and whether we see our own inbound M1. Not a
 // finished module — the go/no-go hardware test for the whole PMKID design.
