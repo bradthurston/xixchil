@@ -91,11 +91,26 @@ static inline bool cap_running() { return g_cap_on; }
 static inline size_t cap_used()  { return g_cap_used; }
 static inline size_t cap_buf_bytes() { return g_cap_cap; }
 
-// 2.4 GHz only — the S3 has no 5 GHz radio, so channel 14 is the top end and
-// anything above it is rejected by the caller, not silently mapped.
+// Channel -> centre frequency, for the radiotap header.
+//
+// This is NOT the band-plan validity check — that lives in protocol.h
+// (`wifi_channel_ok`) and the caller has already applied it before a capture
+// can start. This only has to name the frequency of a channel that has been
+// accepted. It is still per-target, though, because a 2.4-only build must not
+// invent a 5 GHz frequency for a channel it cannot tune.
+//
+// It used to return 2412 for anything above 14, and on the C5 that stamped
+// EVERY 5 GHz record with 2412 MHz. The app's freqToChannel() then read the
+// capture back as channel 1: right frames, wrong band, nothing erroring.
 static uint16_t cap_ch_freq(uint8_t ch) {
     if (ch >= 1 && ch <= 13) return (uint16_t)(2407 + ch * 5);
     if (ch == 14)            return 2484;
+#ifdef HAS_5GHZ_BAND
+    // Real per-band centres: 5000 + ch*5 (36 -> 5180, 44 -> 5220, 149 -> 5745,
+    // 177 -> 5885). Guarded by the shared band plan rather than a range test,
+    // so a gap value (16, 35, 99) can never be handed a frequency here.
+    if (ch > 14 && wifi_channel_ok((int)ch)) return (uint16_t)(5000 + ch * 5);
+#endif
     return 2412;
 }
 
