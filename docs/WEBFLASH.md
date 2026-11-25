@@ -55,26 +55,39 @@ file at offset 0, and the firmware booted and answered (`PING` → `pong`, `STAT
 `bands=2.4+5`, `flash=32768 KB`). The S3 image is built from the same recipe and same offsets but has not
 been round-tripped, because the S3 is not on the bench.
 
+## Who builds these images: CI, and only CI
+
+**Decided 2026-11-25.** The `firmware.yml` job builds and merges the images, then writes them back into
+`docs/` and rewrites the hashes in this file from the files themselves (`firmware/update_flash_doc.py`, so
+the documented hash cannot drift from the binary). On a tag that happens as part of the release; on a
+workflow dispatch it takes `write_back: true`. One builder, one artifact — the page, the release asset and
+the file all come from the same run.
+
+A locally built copy is still useful for testing, but it is no longer what the page serves, and a
+`git pull` will overwrite it. Re-running `firmware/merge_bins.sh` on a developer machine is therefore a
+*local experiment*, not a publish step.
+
 ## These builds are not bit-reproducible across machines — measured, not assumed
 
 Re-running the merge on the same machine reproduces both images byte for byte. **A different machine does
-not.** The `firmware.yml` CI job builds the same source with the same offsets and produces images of
-identical size but different bytes:
+not.** Measured between CI and a developer machine, from the same source at the same offsets:
 
-| | CI build | this machine | bytes differing |
+| | CI build | developer machine | bytes differing |
 |---|---|---|---|
 | C5 | `bab12c8d4edf5359…` | `77fce842d60db07b…` | 333 |
 | S3 | `9c42a87305cb7509…` | `c339e714d4383356…` | 104,099 |
 
 Identical sizes mean the layout is the same; the contents differ (embedded paths and build metadata are the
-usual cause). Consequence worth stating plainly: **the image the flasher serves is the one built and
-hardware-verified here, and a release asset built by CI is a different file that has not been flashed.**
-Anyone comparing hashes across the two will find a mismatch, and that is expected rather than a fault —
-but until this is resolved, do not present a CI-built image as the verified one.
+usual cause). **This is expected, not a fault** — do not "fix" a hash mismatch by rebuilding.
 
-Fix candidates, in order of preference: have the tag job write its rebuilt images back into `docs/` so one
-artifact exists and CI is the only builder; or make the build bit-reproducible
-(`-ffile-prefix-map`, no embedded timestamps) so the hashes agree by construction.
+**Both C5 images are verified on hardware, not just built:**
+- the developer-machine image (`77fce842…`) was flashed at offset 0 and booted;
+- the **CI image (`bab12c8d…`) was flashed the same way and booted** — `PING` → `pong`, `STATUS` →
+  `chip=ESP32-C5`, `bands=2.4+5`, `flash=32768 KB`.
+
+So the byte difference is build metadata and not behaviour, at least for the C5. The S3 image has still
+never been flashed, by either builder, because the S3 is not on the bench — say that plainly rather than
+implying otherwise.
 
 ## How the page flashes
 
