@@ -55,6 +55,27 @@ file at offset 0, and the firmware booted and answered (`PING` → `pong`, `STAT
 `bands=2.4+5`, `flash=32768 KB`). The S3 image is built from the same recipe and same offsets but has not
 been round-tripped, because the S3 is not on the bench.
 
+## These builds are not bit-reproducible across machines — measured, not assumed
+
+Re-running the merge on the same machine reproduces both images byte for byte. **A different machine does
+not.** The `firmware.yml` CI job builds the same source with the same offsets and produces images of
+identical size but different bytes:
+
+| | CI build | this machine | bytes differing |
+|---|---|---|---|
+| C5 | `bab12c8d4edf5359…` | `77fce842d60db07b…` | 333 |
+| S3 | `9c42a87305cb7509…` | `c339e714d4383356…` | 104,099 |
+
+Identical sizes mean the layout is the same; the contents differ (embedded paths and build metadata are the
+usual cause). Consequence worth stating plainly: **the image the flasher serves is the one built and
+hardware-verified here, and a release asset built by CI is a different file that has not been flashed.**
+Anyone comparing hashes across the two will find a mismatch, and that is expected rather than a fault —
+but until this is resolved, do not present a CI-built image as the verified one.
+
+Fix candidates, in order of preference: have the tag job write its rebuilt images back into `docs/` so one
+artifact exists and CI is the only builder; or make the build bit-reproducible
+(`-ffile-prefix-map`, no embedded timestamps) so the hashes agree by construction.
+
 ## How the page flashes
 
 esp-web-tools, pinned to an exact version in `index.html`. It needs the Web Serial API, so Chromium
