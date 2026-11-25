@@ -142,6 +142,20 @@ const dongleSession = new LogitackerSession({
 // which is exactly what you cannot trust when the parser is the suspect.
 window.__dongle = { get session() { return dongleSession; }, get transport() { return dongleTransport; } };
 
+// The same trick for the import lane, which is otherwise only reachable through the
+// native file picker — a dialog no test can click and no screenshot can script. Feeding
+// a capture in through the one importer the UI uses (onImportPickBytes) means a
+// documentation capture exercises the real path: parse, analyze, plan, repaint.
+//
+// It takes base64 because that is what crosses the CDP boundary cleanly, and it is the
+// same shape the native share plugin already hands us.
+window.__importBytes = async (b64, name = 'demo-capture.pcap') => {
+  const { b64ToBytes } = await import('./native-import.js');
+  await onImportPickBytes(b64ToBytes(b64), name);
+  return `imported ${name}`;
+};
+
+
 function dlog(text) {
   log('ev', 'dongle: ' + text);
   const el = $('#dongleOut');
@@ -857,7 +871,11 @@ let selectedTargetIndex = null;  // which target the operator picked in Analysis
 
 function renderAnalyzePanel(box) {
   const w = capture.writer;
-  const n = w ? w.chunks.length : 0;
+  const liveN = w ? w.chunks.length : 0;
+  // An imported capture is frames too. Counting only the live writer made this panel
+  // claim "nothing captured yet" directly above findings read from a file the operator
+  // had just imported — two claims that contradict each other on screen.
+  const n = liveN || (importedCapture ? importedCapture.chunks.length : 0);
   const ready = n > 0;
 
   // Every interpolated value below is a static string, a number, or has been
@@ -889,10 +907,16 @@ function renderAnalyzePanel(box) {
 
 function onAnalyzeRun() {
   const w = capture.writer;
-  if (!w || !w.chunks.length) return;
+  // Analyze whichever frames exist — the live capture, or an imported one. Without the
+  // fallback, making this panel's empty state import-aware would have turned the button
+  // into a control that looks live and returns in silence.
+  const chunks = (w && w.chunks.length) ? w.chunks
+               : (importedCapture && importedCapture.chunks.length) ? importedCapture.chunks
+               : null;
+  if (!chunks) return;
   const t0 = Date.now();
   try {
-    analyzeResult = analyzeChunks(w.chunks);
+    analyzeResult = analyzeChunks(chunks);
     const ms = Date.now() - t0;
     log('ev', `analyzed ${analyzeResult.frames} frames in ${ms} ms — ` +
       `${analyzeResult.aps.length} APs, ${analyzeResult.clients.length} clients, ` +

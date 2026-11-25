@@ -21,6 +21,19 @@ The board is the radio, and nothing else of its own: no screen, no storage, no k
 persisted between power cycles. Two targets are supported — an **ESP32-S3** for 2.4 GHz, and an
 **ESP32-C5** for 2.4 + 5 GHz.
 
+## What it looks like
+
+| | |
+|---|---|
+| ![Home: the module list with live statuses, and the bridge card](assets/screens/home.png) | ![Analysis, Observations: findings read from a capture](assets/screens/analysis-observations.png) |
+| ![Analysis, Assessment: the scored target list and the reason for each score](assets/screens/analysis-assessment.png) | ![Attacks: every module with its readiness state](assets/screens/attacks.png) |
+| ![Crack: a capture imported, and the handshakes extracted from it](assets/screens/crack-import.png) | |
+
+Captured on a stock, unrooted Moto G, in the app's *paper* theme. The networks in these shots are a
+fixture — three invented access points and documentation MAC addresses — fed through the app's own
+importer. A real capture is somebody's network names and addresses, and it has no business on a public
+repository.
+
 ## The name
 
 Xixchil is the mantis-folk of Spelljammer. Before it is anything else, it is the mantis: the
@@ -75,8 +88,8 @@ Five tabs, plus a mode:
 | Tab | What it does |
 |---|---|
 | **Home** | The workstation: link the board, see where the flow stands, start a wardrive. |
-| **Capture** | Streams 802.11 frames into the board's PSRAM, then syncs them down to a `.pcap` on the phone. Analyze is a view inside it, not a separate screen. |
-| **Analysis** | Reads the captured frames and turns the inventory into a plan: what is worth doing, in what order, and why. Nothing here touches the radio. |
+| **Capture** | Streams 802.11 frames into the board's PSRAM, then syncs them down to a `.pcap` on the phone. Three views inside it: **Packets**, **Channels** and **Wardrive**. |
+| **Analysis** | Two views over the same capture, and the old "analyze/analysis" stutter is gone with them: **Observations** is what is on the air, **Assessment** is what to do about it. Nothing here touches the radio. |
 | **Attacks** | Automated attacks against what the capture found. Every entry declares what it needs — `ready`, `partial` or `planned` — and names the firmware command behind it. Nothing here reports having run when it did not. |
 | **Crack** | The extracted `22000` line goes to the bridge, and the passphrase renders on the screen. |
 | **Wardrive** *(mode)* | Continuous capture with GPS-tagged deauth and handshake detection. |
