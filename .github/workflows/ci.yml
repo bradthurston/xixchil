@@ -1,0 +1,92 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gates:
+    name: verify suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The gates themselves import only node builtins; this is here because a couple of
+      # them stage copies of the browser modules out of app/www.
+      - name: install app deps
+        working-directory: app
+        run: npm ci --no-audit --no-fund
+
+      - name: run every gate
+        run: |
+          fail=0
+          for f in tools/verify_*.mjs; do
+            printf '\n─── %s\n' "$f"
+            if node "$f"; then
+              echo "PASS $f"
+            else
+              echo "::error file=$f::gate failed"
+              fail=1
+            fi
+          done
+          echo
+          echo "─── a gate must not leave the tree modified"
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::a gate wrote into the working tree"
+            git status --porcelain
+            fail=1
+          else
+            echo "tree clean"
+          fi
+          exit $fail
+
+  android:
+    name: android build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # cap sync, not cap copy: capacitor-cordova-android-plugins/ is generated, and copy
+      # alone leaves cordova.variables.gradle missing so Gradle dies on a fresh checkout.
+      - name: install + sync
+        working-directory: app
+        run: |
+          npm ci --no-audit --no-fund
+          npx cap sync android
+
+      - name: assembleDebug
+        working-directory: app/android
+        run: ./gradlew assembleDebug --no-daemon
+
+      # The privacy rule, enforced instead of remembered: app/www/js/bridge-defaults.js is
+      # gitignored because it holds a live bridge URL and token, and cap sync copies whatever
+      # is in www/ into the APK. A checkout never has it — so if it turns up in a build here,
+      # something has gone wrong with the ignore rules.
+      - name: assert no bridge credentials in the APK
+        run: |
+          APK=$(find app/android/app/build/outputs/apk/debug -name '*.apk' | head -1)
+          echo "apk: $APK"
+          if unzip -l "$APK" | grep -q 'bridge-defaults\.js$'; then
+            echo "::error::bridge-defaults.js is inside the APK — it must never ship"
+            exit 1
+          fi
+          echo "clean: no bridge-defaults.js"
+          unzip -l "$APK" | grep -c 'bridge-defaults\.example\.js' || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xixchil-debug-apk
+          path: app/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

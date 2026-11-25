@@ -21,11 +21,29 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="$HERE/../docs"     # GitHub Pages serves main:/docs — that is where the flasher lives
-ESPTOOL="${ESPTOOL:-$HOME/.platformio/penv/bin/esptool}"
-BOOTAPP="${BOOTAPP:-$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin}"
 
-[ -x "$ESPTOOL" ] || { echo "esptool not found at $ESPTOOL — set ESPTOOL=" >&2; exit 1; }
-[ -f "$BOOTAPP" ] || { echo "boot_app0.bin not found at $BOOTAPP" >&2; exit 1; }
+# Locate the tools the way each environment actually has them: a pip-installed PlatformIO on
+# CI has no ~/.platformio/penv, and the framework package name has changed between releases
+# (framework-arduinoespressif32 vs -libs). Search rather than hardcode.
+find_esptool() {
+  for c in "${ESPTOOL:-}" "$(command -v esptool 2>/dev/null)" \
+           "$HOME/.platformio/penv/bin/esptool"; do
+    [ -n "$c" ] && [ -x "$c" ] && { echo "$c"; return 0; }
+  done
+  return 1
+}
+find_bootapp() {
+  for c in "${BOOTAPP:-}" \
+           "$HOME"/.platformio/packages/framework-arduinoespressif32*/tools/partitions/boot_app0.bin; do
+    [ -n "$c" ] && [ -f "$c" ] && { echo "$c"; return 0; }
+  done
+  return 1
+}
+
+ESPTOOL="$(find_esptool)" || { echo "esptool not found (set ESPTOOL=)" >&2; exit 1; }
+BOOTAPP="$(find_bootapp)" || { echo "boot_app0.bin not found under ~/.platformio/packages (set BOOTAPP=)" >&2; exit 1; }
+echo "esptool:  $ESPTOOL"
+echo "boot_app0: $BOOTAPP"
 
 cd "$HERE"
 

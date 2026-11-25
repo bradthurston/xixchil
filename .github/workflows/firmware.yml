@@ -1,0 +1,81 @@
+name: firmware
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  merged-images:
+    name: merged flash images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The Espressif toolchain is a few hundred MB and barely changes. Without this cache
+      # every run pays for it again.
+      - name: cache platformio
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: install platformio
+        run: python -m pip install --upgrade platformio
+
+      # Builds both environments and merges each into one image at offset 0, using the
+      # offsets read off the build — see the header of the script for why the C5's
+      # bootloader being at 0x2000 instead of 0x0 matters.
+      - name: build and merge
+        run: firmware/merge_bins.sh
+
+      - name: hashes
+        run: |
+          {
+            echo '## Merged firmware images'
+            echo
+            echo '| image | bytes | sha256 |'
+            echo '|---|---|---|'
+            for f in docs/xixchil-*-merged.bin; do
+              printf '| `%s` | %s | `%s` |\n' "$(basename "$f")" "$(stat -c%s "$f")" "$(sha256sum "$f" | cut -d' ' -f1)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xixchil-merged-images
+          path: docs/xixchil-*-merged.bin
+          if-no-files-found: error
+
+      # On a tag, publish the images with the release so the artifact is reproducible from
+      # the source tree alone. The APK is still built and signed by hand — signing needs a
+      # keystore, and that decision has not been made.
+      - name: attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          # ref_name is passed through the environment, never interpolated into the script:
+          # a tag name is attacker-controlled input on a public repo.
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            printf '%s\n' \
+              'Firmware images for this tag, built by CI from this commit.' \
+              '' \
+              'Flash either image at offset 0 — each contains the bootloader, partition table' \
+              'and application. A signed APK for the phone half is attached separately.' \
+              > /tmp/notes.md
+            gh release create "$TAG" --title "$TAG" --notes-file /tmp/notes.md --verify-tag
+          fi
+          gh release upload "$TAG" docs/xixchil-*-merged.bin --clobber
+          gh release view "$TAG" --json assets \
+            --jq '.assets[] | "\(.name)  \(.size) bytes"'
