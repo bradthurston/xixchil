@@ -37,10 +37,15 @@ find_esptool() {
   return 1
 }
 find_bootapp() {
-  for c in "${BOOTAPP:-}" \
-           "$HOME"/.platformio/packages/framework-arduinoespressif32*/tools/partitions/boot_app0.bin; do
+  local c
+  for c in "${BOOTAPP:-}"; do
     [ -n "$c" ] && [ -f "$c" ] && { echo "$c"; return 0; }
   done
+  # The framework package name and layout have both moved around between releases
+  # (framework-arduinoespressif32 vs -libs, and the pioarduino distributions arrange it
+  # differently). Hunt for the file rather than guess a directory.
+  c="$(find "$HOME/.platformio" -name boot_app0.bin -type f -print -quit 2>/dev/null || true)"
+  [ -n "$c" ] && [ -f "$c" ] && { echo "$c"; return 0; }
   return 1
 }
 
@@ -49,7 +54,12 @@ case "$FOUND" in
   bin:*) ESPTOOL=("${FOUND#bin:}") ;;
   py:*)  ESPTOOL=(python3 "${FOUND#py:}") ;;
 esac
-BOOTAPP="$(find_bootapp)" || { echo "boot_app0.bin not found under ~/.platformio/packages (set BOOTAPP=)" >&2; exit 1; }
+BOOTAPP="$(find_bootapp)" || {
+  echo "boot_app0.bin not found under ~/.platformio (set BOOTAPP=)." >&2
+  echo "What is actually there, so the next run does not have to guess:" >&2
+  find "$HOME/.platformio" -maxdepth 3 \( -name 'framework-*' -o -name 'tool-esptoolpy' \) 2>/dev/null | head -20 >&2
+  exit 1
+}
 echo "esptool:   ${ESPTOOL[*]}"
 echo "boot_app0: $BOOTAPP"
 
