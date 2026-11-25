@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build both firmware targets and merge each into a single flashable image for the
-# browser flasher (webflash/).
+# browser flasher (docs/, which is what GitHub Pages serves).
 #
 # Offsets are NOT guesses. They are the ones the build itself flashes with — read them
 # with:
@@ -22,18 +22,30 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="$HERE/../docs"     # GitHub Pages serves main:/docs — that is where the flasher lives
 
-# Locate the tools the way each environment actually has them: a pip-installed PlatformIO on
-# CI has no ~/.platformio/penv, and the framework package name has changed between releases
-# (framework-arduinoespressif32 vs -libs). PlatformIO also bundles esptool as a *package*
-# (tool-esptoolpy/esptool.py) with no console script on PATH, so that form is supported too.
+cd "$HERE"
+
+# ── 1. build first ───────────────────────────────────────────────────────────
+# Order matters: boot_app0.bin ships *inside the framework package*, which PlatformIO only
+# downloads when it builds. Hunting for it before this point finds nothing on a clean
+# machine — which is exactly how the first CI run of this script failed, before it had
+# compiled anything.
+echo "== building both environments"
+pio run -e s3-n16r8
+pio run -e c5-n32r8
+
+# ── 2. locate the tools ──────────────────────────────────────────────────────
+# Locate them the way each environment actually has them: a pip-installed PlatformIO on CI
+# has no ~/.platformio/penv, the framework package name has changed between releases
+# (framework-arduinoespressif32 vs -libs), and PlatformIO bundles esptool as a *package*
+# (tool-esptoolpy/esptool.py) with no console script on PATH. Search; do not hardcode.
 find_esptool() {
+  local c
   for c in "${ESPTOOL:-}" "$(command -v esptool 2>/dev/null)" \
            "$HOME/.platformio/penv/bin/esptool"; do
     [ -n "$c" ] && [ -x "$c" ] && { echo "bin:$c"; return 0; }
   done
-  for c in "$HOME"/.platformio/packages/tool-esptoolpy/esptool.py; do
-    [ -n "$c" ] && [ -f "$c" ] && { echo "py:$c"; return 0; }
-  done
+  c="$(find "$HOME/.platformio" -name 'esptool.py' -type f -print -quit 2>/dev/null || true)"
+  [ -n "$c" ] && [ -f "$c" ] && { echo "py:$c"; return 0; }
   return 1
 }
 find_bootapp() {
@@ -41,9 +53,6 @@ find_bootapp() {
   for c in "${BOOTAPP:-}"; do
     [ -n "$c" ] && [ -f "$c" ] && { echo "$c"; return 0; }
   done
-  # The framework package name and layout have both moved around between releases
-  # (framework-arduinoespressif32 vs -libs, and the pioarduino distributions arrange it
-  # differently). Hunt for the file rather than guess a directory.
   c="$(find "$HOME/.platformio" -name boot_app0.bin -type f -print -quit 2>/dev/null || true)"
   [ -n "$c" ] && [ -f "$c" ] && { echo "$c"; return 0; }
   return 1
@@ -54,6 +63,7 @@ case "$FOUND" in
   bin:*) ESPTOOL=("${FOUND#bin:}") ;;
   py:*)  ESPTOOL=(python3 "${FOUND#py:}") ;;
 esac
+
 BOOTAPP="$(find_bootapp)" || {
   echo "boot_app0.bin not found under ~/.platformio (set BOOTAPP=)." >&2
   echo "What is actually there, so the next run does not have to guess:" >&2
@@ -63,12 +73,7 @@ BOOTAPP="$(find_bootapp)" || {
 echo "esptool:   ${ESPTOOL[*]}"
 echo "boot_app0: $BOOTAPP"
 
-cd "$HERE"
-
-echo "== building both environments"
-pio run -e s3-n16r8
-pio run -e c5-n32r8
-
+# ── 3. merge ─────────────────────────────────────────────────────────────────
 echo "== merging ESP32-S3 (N16R8, 16 MB)"
 "${ESPTOOL[@]}" --chip esp32s3 merge-bin -o "$OUT/xixchil-s3-n16r8-merged.bin" \
   --flash-mode dio --flash-freq 80m --flash-size 16MB \
