@@ -15,7 +15,8 @@ are enforced **before** the switch is flipped, not after.
    test, not in a doc, not in a comment. A test that needs to compare a decoded SSID takes the
    expected value from `tshark` at run time, or from whatever fixture it was handed.
 2. **No device MACs.** Not the ESP32's, not an access point's, not a station's. Synthetic
-   addresses only, and they should look synthetic (`9c:8b:76:80:32:97`, `7c:d3:0a:11:22:33`),
+   addresses only, and they should look synthetic (`aa:bb:cc:dd:ee:ff`, `02:11:22:33:44:55`),
+   **not** a real address with one character changed — the tail of a MAC identifies the device
    never a real OUI borrowed from a capture.
 3. **Fixtures are synthetic or absent.** Real captures stay outside the repo — `tools/capture.pcap`
    is git-ignored for exactly this reason. Tools that need one accept a path argument and skip

@@ -124,7 +124,7 @@ def main():
     out = args[1] if len(args) > 1 else "/tmp/wardrive-deauth"
     # Placeholder targets. Pass the real ones on the command line: this fires a deauth
     # at a specific station, and only your own gear on your own channel is a target.
-    bssid = args[2] if len(args) > 2 else "9c:8b:76:80:32:97"
+    bssid = args[2] if len(args) > 2 else "aa:bb:cc:dd:ee:ff"
     clients = args[3].split(",") if len(args) > 3 else ["de:ad:be:ef:00:03"]
     pre_s = float(args[4]) if len(args) > 4 else 6.0
     post_s = float(args[5]) if len(args) > 5 else 25.0

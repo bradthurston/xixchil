@@ -1,7 +1,7 @@
 # Twin handshake capture with one radio, and a WPA*02* hash from hostapd's log
 
 2026-11-20. Bench: AR9271 + Intel AC 3168, hostapd, hashcat 6.2.6 on an RTX 3060.
-Target: a smart TV on the network (`7c:d3:0a:11:22:33`) and the SSID of a retired AP,
+Target: a smart TV on the network (`aa:bb:cc:dd:ee:02` — synthetic) and the SSID of a retired AP,
 `Retired-Net`.
 
 ## Result
@@ -61,7 +61,7 @@ Key Data Length and the key data.
 A hash that parses is not a hash that works. The builder was validated against a handshake
 whose PSK is known, built for the purpose:
 
-- hostapd as AP on the AR9271, SSID `valtest`, PSK `validation-psk-123`
+- hostapd as AP on the AR9271, SSID `example-ap`, PSK `validation-psk-123`
 - `wpa_supplicant -i wlp5s0 -c ... -dd -K` as the station on the Intel card
 
 Then: the builder's MIC `0ab6c5123b3e14f3168c76d6c3c2bc8d` is byte-identical to the MIC

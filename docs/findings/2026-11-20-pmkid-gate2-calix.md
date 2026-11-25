@@ -7,7 +7,7 @@ classic PMKID attack.
 
 **Answer: NO. Gate 2 fails on this AP.**
 
-Target: `Lab-AP_5g`, BSSID `9C:8B:76:80:32:97`, ch 6, WPA2-PSK.
+Target: `example-ap`, BSSID `aa:bb:cc:dd:ee:ff` (synthetic), ch 6, WPA2-PSK.
 Radio: Atheros AR9271 (`0cf3:9271`, ath9k_htc). `wlan0` below is whatever udev named it.
 
 ## Evidence

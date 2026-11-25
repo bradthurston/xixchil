@@ -150,7 +150,7 @@ Criterion 1 is software-complete and proven live:
   false positive.
 - Live bridge run — synthesise handshake → `crack.js` extractor → multipart `POST /crack` with
   `X-Token` → poll `/jobs/{id}` → `/jobs/{id}/result` → **cracked in 2.0 s, elapsed 1.26 s,
-  password `hashcat!`** (probe: `~/.hermes/cache/scratch/probe_live_crack.mjs`).
+  password `hashcat!`**.
 - App side has no typing in the path: baked bridge URL (MagicDNS) + token, saved strategy defaults,
   one "Crack on the bridge" button, 30 s health keepalive.
 

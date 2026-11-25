@@ -2,6 +2,10 @@
 
 **ZIK-chel**
 
+[![ci](https://github.com/bradthurston/xixchil/actions/workflows/ci.yml/badge.svg)](https://github.com/bradthurston/xixchil/actions/workflows/ci.yml)
+[![latest release](https://img.shields.io/github/v/release/bradthurston/xixchil)](https://github.com/bradthurston/xixchil/releases)
+[![licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+
 ![A praying mantis in black ink on warm paper — forelegs folded, long body slanting away](assets/mantis-banner.jpg)
 
 *Capture, analyze and crack WPA handshakes from your phone.*

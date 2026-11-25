@@ -52,7 +52,7 @@ const {
 
 const URI = 'http://192.168.4.1/portal';
 const OUR_IP = '192.168.4.1';
-const CHADDR = '7c:d3:0a:11:22:33';
+const CHADDR = 'aa:bb:cc:dd:ee:02';
 
 let pass = 0, fail = 0;
 const failures = [];

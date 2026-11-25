@@ -35,8 +35,8 @@ from scapy.all import (RadioTap, Dot11, Dot11Auth, Dot11AssoReq, Dot11Elt,
                        EAPOL, sendp, AsyncSniffer)
 
 IFACE = sys.argv[1] if len(sys.argv) > 1 else "wlan0"
-AP = sys.argv[2] if len(sys.argv) > 2 else "9c:8b:76:80:32:97"
-SSID = sys.argv[3] if len(sys.argv) > 3 else "Lab-AP_5g"
+AP = sys.argv[2] if len(sys.argv) > 2 else "aa:bb:cc:dd:ee:ff"
+SSID = sys.argv[3] if len(sys.argv) > 3 else "example-ap"
 CHAN = sys.argv[4] if len(sys.argv) > 4 else "6"
 
 DUMMY_PMKID = bytes(range(16))

@@ -157,7 +157,7 @@ export function buildHandshake({
   bssid = 'aa:bb:cc:dd:ee:01',
   // A unicast address: the I/G bit (first octet, bit 0) must be clear, or the
   // extractor will rightly refuse it — a group address is never a station.
-  client = '7c:d3:0a:11:22:33',
+  client = 'aa:bb:cc:dd:ee:02',
   withPmkid = true,
   seed = null,
 } = {}) {
