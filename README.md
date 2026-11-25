@@ -6,10 +6,14 @@
 
 *Capture, analyze and crack WPA handshakes from your phone.*
 
-Xixchil splits the job between two halves that are each good at different things. A bare ESP32-S3
+Xixchil splits the job between two halves that are each good at different things. A bare ESP32
 does the radio work — capture, injection, the frames themselves. The phone in your pocket does the
 rest: the interface, the storage, and the GPU that turns a captured handshake into a passphrase.
 Neither half is much use on its own, which is the point.
+
+The board is a donor, not a gadget: no screen, no storage, no keyboard, and nothing persisted
+between power cycles. Two targets are supported — an **ESP32-S3** for 2.4 GHz, and an **ESP32-C5**
+for 2.4 + 5 GHz.
 
 ## The name
 
@@ -60,17 +64,21 @@ you cannot use.
 
 ## What it does
 
-Four stages, left to right, plus a mode:
+Five tabs, plus a mode:
 
-| Stage | What it does |
+| Tab | What it does |
 |---|---|
-| **Capture** | Streams 802.11 frames into the board's PSRAM, then syncs them down to a `.pcap` on the phone. |
-| **Analyze** | Reads the captured frames and works out what is on the air — access points, their security, and what devices are asking for. |
-| **Analysis** | Turns that inventory into a plan: what is worth doing, in what order, and why. Nothing here touches the radio. |
-| **Attack** | Automated attacks against what the capture found. Every entry declares what it needs — `ready`, `partial` or `planned` — and names the firmware command behind it. Nothing here reports having run when it did not. |
-| **Wardrive** | Continuous capture with GPS-tagged deauth and handshake detection. |
+| **Home** | The workstation: link the board, see where the flow stands, start a wardrive. |
+| **Capture** | Streams 802.11 frames into the board's PSRAM, then syncs them down to a `.pcap` on the phone. Analyze is a view inside it, not a separate screen. |
+| **Analysis** | Reads the captured frames and turns the inventory into a plan: what is worth doing, in what order, and why. Nothing here touches the radio. |
+| **Attacks** | Automated attacks against what the capture found. Every entry declares what it needs — `ready`, `partial` or `planned` — and names the firmware command behind it. Nothing here reports having run when it did not. |
+| **Crack** | The extracted `22000` line goes to the bridge, and the passphrase renders on the screen. |
+| **Wardrive** *(mode)* | Continuous capture with GPS-tagged deauth and handshake detection. |
 
-The reason the last two stages exist is the loop: a captured handshake is pulled out of the
+Logs and Settings live in the header. Both toggle back to whatever you were looking at, because
+neither is a place you stay.
+
+The reason Crack exists as its own tab is the loop: a captured handshake is pulled out of the
 capture, converted to a hashcat `22000` line, sent to a crack bridge, and the passphrase comes
 back to the screen. No Termux, no SSH, no shell, no typing.
 
@@ -105,7 +113,7 @@ yours; the bridge will tell you what it can see via `GET /wordlists`.
 
 | Tool | What it is | Where it beats us today |
 |---|---|---|
-| **ESP32 Marauder** | Community firmware, now on ESP32-**C5** = 2.4 + **5 GHz** | Dual band, enormous feature list, huge user base |
+| **ESP32 Marauder** | Community firmware, 2.4 + 5 GHz | Enormous feature list, huge user base, years of field use |
 | **Bruce / GhostESP / HaleHound** | Community firmwares, same class | Feature breadth, dual band, SD logging |
 | **Flipper Zero + devboard** | Gadget + ESP32 backpack | Brand, portability, sub-GHz, polish |
 | **NRSuite** | ESP32 firmware + Android app + Termux toolkit — the closest relative | Years of radio work; we deliberately speak its wire protocol |
@@ -134,11 +142,22 @@ Verified on hardware, not on a build log:
 - **Firmware** builds clean and is flashed to a real S3 N16R8, answering `PING`, `STATUS`, `STAGE`
   and `SCAN` over USB serial — a live scan returns real access points.
 - **8 MB PSRAM** is live at runtime (`psram_total: 8388608`). It is the capture buffer.
+- **Both bands capture on the ESP32-C5.** An 8 s capture on channel 11 returned 672 frames, zero
+  dropped, draining complete, radiotap reporting 2462 MHz; the same on channel 44 returned 250
+  frames at 5220 MHz. The board's own scan sees 13 networks across both bands. 5 GHz capture is
+  real traffic, not a channel that was accepted and heard nothing.
 - **The app** builds a debug APK and its protocol layer is byte-verified against the board: its
   encoder produces frames the device accepted, and its decoder recovers what the device sent
   from awkward 7-byte chunks.
 - **USB-OTG link** proven end to end on a stock, unrooted Android 16 phone — no root, no custom
   ROM, bidirectional exchange with the board.
+- **Raw transmit is air-verified.** A sentinel beacon built and sent by the board is received by an
+  independent radio, so the injection path is proven at driver level and on the air rather than by a
+  return code.
+- **The evil portal** is built and device-proven end to end: the twin comes up on the air, an Android
+  client is hijacked by the RFC 8910 option-114 redirect, and the submitted credential is captured as
+  an event. It is an **open** network by design — an ESP32 softAP cannot offer WPA2 with PMF, and
+  Android 11+ will not associate to one that does not advertise it.
 - **The crack loop** proven live: captured handshake → `.22000` → bridge → passphrase, 2.0 s
   round trip.
 - **The 22000 line** is byte-identical to `hcxpcapngtool`'s output on both synthetic and real
@@ -146,24 +165,45 @@ Verified on hardware, not on a build log:
 
 ## What does not work yet
 
-- **5 GHz. This is the real gap.** The ESP32-S3 is 2.4 GHz only, and most modern networks are
-  not. A port to the ESP32-C5 is planned; the protocol is already transport-agnostic, so it is a
-  radio-layer swap rather than a rewrite.
-- **Evil portal / captive portal** is not built on our side. The Karma and Mana lures that feed it
-  are built and air-verified; the portal itself is missing.
-- **MouseJack** is `partial` — it needs nRF52840-class hardware, not the nRF24 module the bench
-  has.
-- **BadUSB / HID** is not built. TinyUSB is already the USB mode chosen for it.
+- **5 GHz injection.** Capture on both bands is proven on the C5. A 5 GHz transmit that a second
+  radio actually observes is not — that is the one remaining unknown, and it is the point of
+  the board.
+- **PMKID is opportunistic, not a path.** The ESP-IDF supplicant cannot advertise PMKID caching —
+  the association request's RSN IE is not expressible through `esp_wifi_set_config` — so an AP that
+  offers a PMKID will hand one over and most will not. The evil twin is the universal arm.
+- **MouseJack** is `partial`. The nRF24 injection path is written — the SPI radio on the board, the
+  frame builder on the phone — and the app lists no missing prerequisite for it, but it has not been
+  verified against a real receiver. The dedicated research tooling (RFStorm, LOGITacker) runs on
+  nRF24LU1+ / nRF52840-class hardware instead, which is a different radio from this one.
+- **BadUSB / HID** is not built. The blocker is the S3's native-USB identity conflict rather than the
+  bench — TinyUSB is already the USB mode chosen for it.
 
 ## Running it
 
+### Install (Android)
+
+Grab the signed APK from **[Releases](https://github.com/bradthurston/xixchil/releases)** and sideload
+it — Android will ask you to allow installing from your browser or file manager. No Play Store, no
+root. The published build carries no bridge URL or token: point it at your own bridge in Settings.
+
 ### Firmware
 
-Target: **ESP32-S3-DevKitC-1 N16R8** (16 MB flash, 8 MB octal PSRAM).
+Two targets. **ESP32-S3-DevKitC-1 N16R8** (16 MB flash, 8 MB octal PSRAM) does 2.4 GHz:
 
     cd firmware
     pio run -e s3-n16r8                                       # build
     pio run -e s3-n16r8 -t upload --upload-port /dev/ttyACM0  # flash
+
+**Waveshare ESP32-C5-WIFI6-KIT-N32R8-U** (32 MB flash, 8 MB PSRAM) adds 5 GHz:
+
+    pio run -e c5-n32r8
+    pio run -e c5-n32r8 -t upload --upload-port /dev/ttyACM0
+
+The C5 board's USB-C socket goes to a CH343 bridge, which forces two settings already in
+`platformio.ini`: `upload_speed = 115200` (the baud *change* is what fails, not the speed — 460800 and
+921600 both die immediately after "Changing baud rate to …") and `--no-stub` (with the stub flasher
+loaded, esptool dies the moment it touches the flash chip). Its DTR polarity is inverted as well: DTR
+high at reset-release parks the chip in the ROM loader where it sits silent, DTR low boots the app.
 
 PSRAM must stay enabled (`qio_opi`) — it is the capture buffer, and the Arduino core's default
 variant for this board disables it.
@@ -181,7 +221,19 @@ native USB port. Flash over the UART bridge, or hold BOOT and tap RESET.
     cd app
     npm install
     npx cap copy android
-    cd android && ./gradlew assembleDebug
+    cd android && ./gradlew assembleDebug     # debug-signed, fine for your own phone
+    cd android && ./gradlew assembleRelease   # signed from app/android/keystore.properties
+
+Release builds are signed from `app/android/keystore.properties`, which is gitignored:
+`storeFile`, `storePassword`, `keyAlias`, `keyPassword`. Without that file `assembleRelease` produces
+an unsigned APK instead of quietly falling back to the debug key — an APK signed with the debug key
+looks fine until someone tries to update over it and cannot.
+
+`app/www/js/bridge-defaults.js` is gitignored too, and deliberately: it is how the app remembers
+*your* bridge URL and token so there is nothing to paste. Copy `bridge-defaults.example.js` to
+`bridge-defaults.js` for that convenience, and leave it out of any build you hand to someone else.
+The app starts fine without it — `index.html` loads it with an `onerror` fallback and Settings is
+where the URL goes.
 
 Toolchain that works: JDK 21, Android SDK with platform 36, Gradle 8.14.3, AGP 8.13.0,
 `minSdk 24` / `compileSdk 36`. JitPack is required in `android/build.gradle` — the USB serial
