@@ -1,5 +1,25 @@
 apply plugin: 'com.android.application'
 
+// Release signing. The keystore and its passwords are machine-local and gitignored
+// (repo .gitignore: *.keystore, *.jks, keystore.properties) — this file only says where
+// to look, so a fresh clone builds without carrying anyone's key. There is deliberately
+// no fallback to the debug key: an unsigned release APK is an obvious failure, while a
+// release APK silently signed with the debug key looks fine until someone tries to
+// update it over a properly-signed install and cannot.
+//
+// keystore.properties (not committed):
+//     storeFile=/abs/path/to/xixchil-release.keystore
+//     storePassword=...
+//     keyAlias=xixchil
+//     keyPassword=...
+def keystorePropsFile = rootProject.file('keystore.properties')
+def releaseKeystore = null
+if (keystorePropsFile.exists()) {
+    def props = new Properties()
+    keystorePropsFile.withInputStream { props.load(it) }
+    releaseKeystore = props
+}
+
 android {
     namespace = "io.github.bradthurston.xixchil"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -8,7 +28,7 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
-        versionName "1.0"
+        versionName "0.1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,10 +36,23 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (releaseKeystore != null) {
+                storeFile file(releaseKeystore['storeFile'])
+                storePassword releaseKeystore['storePassword']
+                keyAlias releaseKeystore['keyAlias']
+                keyPassword releaseKeystore['keyPassword']
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (releaseKeystore != null) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 }
