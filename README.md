@@ -220,9 +220,14 @@ native USB port. Flash over the UART bridge, or hold BOOT and tap RESET.
 
     cd app
     npm install
-    npx cap copy android
+    npx cap sync android                      # copy assets AND generate the native plugin scaffolding
     cd android && ./gradlew assembleDebug     # debug-signed, fine for your own phone
     cd android && ./gradlew assembleRelease   # signed from app/android/keystore.properties
+
+`cap sync`, not `cap copy`. `capacitor-cordova-android-plugins/` is generated rather than tracked, and
+`copy` alone leaves `cordova.variables.gradle` missing — Gradle then fails on a clean clone with
+*"Could not read script .../cordova.variables.gradle as it does not exist"*, which reads like a broken
+repo rather than a missed build step.
 
 Release builds are signed from `app/android/keystore.properties`, which is gitignored:
 `storeFile`, `storePassword`, `keyAlias`, `keyPassword`. Without that file `assembleRelease` produces
