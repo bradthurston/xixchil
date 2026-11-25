@@ -29,10 +29,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            tshark hashcat hcxtools
+            tshark hashcat hcxtools pocl-opencl-icd
           tshark --version | head -1
           hashcat --version
           hcxpcapngtool --version | head -1
+          # hashcat refuses to run without an OpenCL platform, and a bare runner has none:
+          # "ATTENTION! No OpenCL, HIP or CUDA compatible platform found." pocl is the CPU
+          # implementation, which is all these small wordlist checks need.
+          hashcat -I 2>&1 | head -12
 
       # The gates themselves import only node builtins; this is here because a couple of
       # them stage copies of the browser modules out of app/www.

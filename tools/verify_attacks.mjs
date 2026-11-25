@@ -342,7 +342,16 @@ try {
   ok(/^[0-9a-f]*$/i.test(essidHex), 'the ESSID field is hex, not a readable name');
   ok(essidHex.length % 2 === 0, 'the ESSID field is a whole number of bytes');
 } catch (e) {
-  ok(false, 'real-capture extraction', e.message);
+  // The reference capture is one taken off Brad's own air and is deliberately not in the
+  // repo (it carries live network names and addresses). A missing local fixture is a skip,
+  // not a defect — calling it a failure made this gate red on every machine that is not his,
+  // CI included, which is how a suite stops being read.
+  if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) {
+    console.log(`  SKIP: no reference capture at ${REAL}`);
+    console.log('        real-frame extraction is unproven in this run — build one on a machine that has it.');
+  } else {
+    ok(false, 'real-capture extraction', e.message);
+  }
 }
 
 // ── 4. the multipart body the bridge parses ──────────────────────────────────
