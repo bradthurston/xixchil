@@ -10,14 +10,16 @@
 
 *Capture, analyze and crack WPA handshakes from your phone.*
 
+*For networks you own or have written permission to test — see [Authorized use](#authorized-use).*
+
 Xixchil splits the job between two halves that are each good at different things. A bare ESP32
 does the radio work — capture, injection, the frames themselves. The phone in your pocket does the
 rest: the interface, the storage, and the GPU that turns a captured handshake into a passphrase.
 Neither half is much use on its own, which is the point.
 
-The board is a donor, not a gadget: no screen, no storage, no keyboard, and nothing persisted
-between power cycles. Two targets are supported — an **ESP32-S3** for 2.4 GHz, and an **ESP32-C5**
-for 2.4 + 5 GHz.
+The board is the radio, and nothing else of its own: no screen, no storage, no keyboard, and nothing
+persisted between power cycles. Two targets are supported — an **ESP32-S3** for 2.4 GHz, and an
+**ESP32-C5** for 2.4 + 5 GHz.
 
 ## The name
 
@@ -58,7 +60,7 @@ serial CLI, or an actual laptop — and then hand you a file to go process somew
 | | The usual tool | Xixchil |
 |---|---|---|
 | What you carry | a gadget with its own screen (Marauder, Bruce, Flipper) or a laptop | a blank dev board, and the phone already in your pocket |
-| Where the work happens | a tiny screen, a serial terminal, or a laptop toolkit | one Android app: four stages, taps instead of typing |
+| Where the work happens | a tiny screen, a serial terminal, or a laptop toolkit | one Android app: five tabs, taps instead of typing |
 | What is left on the device | logs, configs, payloads, an SD card | nothing |
 | What you get at the end | a `.pcap` or a hashcat file, and a trip to a PC | the passphrase, on the phone's screen |
 | What it looks like while you work | a bundle of boards, wires and antennae | you, looking at your phone |
@@ -97,8 +99,8 @@ Here is the honest shape of it, because it matters:
 | | |
 |---|---|
 | **What it is** | A small FastAPI service (~400 lines) that runs `hashcat -m 22000` and hands back the result. |
-| **What it needs** | A machine with a GPU, or the phone itself under Termux. Either works — the app only needs a URL and a token. |
-| **Why it's separate** | The phone CPU does roughly **2-5 kH/s**. A single desktop GPU does roughly **371 kH/s**. That is not a tuning difference, it is two orders of magnitude, so the design is "the phone is the console, the GPU is the muscle". |
+| **What it needs** | A machine with a GPU. The phone itself works too, **under Termux** — that is optional, and it is a choice about where the search runs rather than a requirement of the app. The app never needs a shell. Either way it only needs a URL and a token. |
+| **Why it's separate** | Measured on our own kit: a phone CPU does roughly **2-5 kH/s**, an RTX 3060 does roughly **371 kH/s** on `-m 22000`. That is two orders of magnitude, not a tuning difference, so the design is "the phone is the console, the GPU is the muscle". |
 | **What leaves your phone** | A `.22000` file, 1-20 KB. That is the entire egress. Wordlists stay on the bridge host and are never copied to the phone. |
 
 It is deliberately a dumb service: HTTP/JSON, token-gated, one worker thread so jobs queue
@@ -117,11 +119,11 @@ yours; the bridge will tell you what it can see via `GET /wordlists`.
 
 | Tool | What it is | Where it beats us today |
 |---|---|---|
-| **ESP32 Marauder** | Community firmware, 2.4 + 5 GHz | Enormous feature list, huge user base, years of field use |
-| **Bruce / GhostESP / HaleHound** | Community firmwares, same class | Feature breadth, dual band, SD logging |
-| **Flipper Zero + devboard** | Gadget + ESP32 backpack | Brand, portability, sub-GHz, polish |
-| **NRSuite** | ESP32 firmware + Android app + Termux toolkit — the closest relative | Years of radio work; we deliberately speak its wire protocol |
-| **airgeddon / wifite / Kismet** | Laptop toolkits | Real cracking, real NICs, real reports — on a laptop |
+| [**ESP32 Marauder**](https://github.com/justcallmekoko/ESP32Marauder) | Community firmware, 2.4 + 5 GHz | Enormous feature list, huge user base, years of field use |
+| [**Bruce**](https://github.com/pr3y/Bruce) / [**GhostESP**](https://github.com/Spooks4576/Ghost_ESP) / HaleHound | Community firmwares, same class | Feature breadth, dual band, SD logging |
+| [**Flipper Zero**](https://flipperzero.one) + devboard | Gadget + ESP32 backpack | Brand, portability, sub-GHz, polish |
+| [**NRSuite**](https://github.com/7wp81x/nrsuite-firmware) | ESP32 firmware + Android app + Termux toolkit — the closest relative | Years of radio work; we deliberately speak its wire protocol |
+| [**airgeddon**](https://github.com/v1s1t0r1sh3r3/airgeddon) / [**wifite**](https://github.com/derv82/wifite2) / [**Kismet**](https://www.kismetwireless.net) | Laptop toolkits | Real cracking, real NICs, real reports — on a laptop |
 
 Deauth, beacon spam, probe, AP and client scanning, handshake and PMKID capture, pcap export:
 everyone has these. They are the price of entry, not a feature list.
@@ -131,7 +133,9 @@ What is actually ours:
 - **Nothing persists on the radio.** No SD card, no config, no logs, no payloads — the board comes
   up clean every time, and so does the next engagement.
 - **The crack is inside the same flow.** NRSuite *exports* a hashcat file and stops — you still
-  need a PC, hashcat and the knowledge. Marauder, Bruce and Flipper do not crack at all.
+  need a PC, hashcat and the knowledge. As far as we can tell, Marauder, Bruce and Flipper hand you the
+  capture and leave the search to you; if one of them has added cracking, tell us and we will fix this
+  line.
 - **It is an app, not a CLI.** NRSuite's real power lives behind Termux and an SSH session.
 - **The attacks tell the truth about themselves.** Every one carries a `built` state and lists
   the prerequisites it is missing, per attack, rather than failing silently.
@@ -162,8 +166,9 @@ Verified on hardware, not on a build log:
   client is hijacked by the RFC 8910 option-114 redirect, and the submitted credential is captured as
   an event. It is an **open** network by design — an ESP32 softAP cannot offer WPA2 with PMF, and
   Android 11+ will not associate to one that does not advertise it.
-- **The crack loop** proven live: captured handshake → `.22000` → bridge → passphrase, 2.0 s
-  round trip.
+- **The crack loop** proven live: captured handshake → `.22000` → bridge → passphrase in **2.0 s**. That
+  figure is a round trip against a **one-entry test wordlist with no rules** on an RTX 3060 — it measures
+  the plumbing, not a promise about a real wordlist. `rockyou2024` is not two seconds.
 - **The 22000 line** is byte-identical to `hcxpcapngtool`'s output on both synthetic and real
   frames, and a decoy wordlist exhausts with no false positive.
 
@@ -282,12 +287,16 @@ the framing has to match theirs exactly. `firmware/src/protocol.h` and `app/www/
 are two views of one spec — if either drifts from `ProtocolSpec.h`, the app breaks against one of
 the two firmwares.
 
-NRSuite itself (`7wp81x/nrsuite-firmware`, `7wp81x/NRSuite-Android`) is **GPL-3.0, Copyright (C)
-2026 J457**, and is not our project. Forking it would put our code under GPL permanently. Talking
-to it over a documented wire protocol does not — a separate program speaking a protocol to a GPL
-program is not a derivative work. So our app stays MIT, their firmware is untouched, and we get
-years of radio work for free. Credit where it is due: the protocol, the command vocabulary and
-the radio behaviour this console drives were their work first.
+NRSuite itself ([`7wp81x/nrsuite-firmware`](https://github.com/7wp81x/nrsuite-firmware),
+[`7wp81x/NRSuite-Android`](https://github.com/7wp81x/NRSuite-Android)) is **GPL-3.0, Copyright (C)
+2026 J457**, and is not our project. We did not fork it and no code was copied from it: our framing was
+written against their documented protocol, and our app only ever talks to their firmware over the wire.
+
+**Our reading** is that a separate program exchanging messages with a GPL program over a documented wire
+protocol is not a derivative work, which is why this repo is MIT. That is our reading and not legal advice
+— the boundary between interoperating with a GPL program and being derivative of it is genuinely contested,
+and anyone reusing this should satisfy themselves rather than take our word. Credit where it is due: the
+protocol, the command vocabulary and the radio behaviour this console drives were their work first.
 
 ## Authorized use
 
