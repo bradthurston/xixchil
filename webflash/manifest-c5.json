@@ -1,0 +1,13 @@
+{
+  "name": "Xixchil — ESP32-C5 (Waveshare N32R8, 2.4 + 5 GHz)",
+  "version": "0.4.0-lure",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-C5",
+      "parts": [
+        { "path": "xixchil-c5-n32r8-merged.bin", "offset": 0 }
+      ]
+    }
+  ]
+}

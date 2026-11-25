@@ -1,0 +1,13 @@
+{
+  "name": "Xixchil — ESP32-S3 (N16R8, 2.4 GHz)",
+  "version": "0.4.0-lure",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "xixchil-s3-n16r8-merged.bin", "offset": 0 }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Xixchil — flash the board</title>
+<meta name="color-scheme" content="dark light">
+<!--
+  esp-web-tools pinned to an exact version, not a caret or a bare major. There is no
+  integrity= hash here on purpose: the `?module` transform rewrites the module's own
+  relative imports, so the bytes unpkg serves are not the published file and cannot be
+  hash-pinned. Pinning the version is the mitigation — bump this line deliberately.
+-->
+<script type="module" src="https://unpkg.com/esp-web-tools@10.5.2/dist/web/install-button.js?module"></script>
+<style>
+  :root {
+    --bg:      #100E0A;
+    --panel:   #2A2520;
+    --fg:      #EDE4CD;
+    --text-2:  #C8BFA6;
+    --muted:   #AAA08C;
+    --line:    #51483A;
+    --accent:  #EB6101;   /* 朱色 shuiro — vermilion, the seal */
+    --green:   #68BE8D;   /* 若竹色 wakatakeiro */
+    --paper:   #F4ECD8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 720px; margin: 0 auto; padding: 48px 20px 72px; }
+  h1 { font-size: 30px; font-weight: 300; letter-spacing: .01em; margin: 0 0 4px; }
+  h1 .pron { font-size: 13px; color: var(--muted); letter-spacing: .18em; text-transform: uppercase; }
+  h2 { font-size: 15px; font-weight: 600; margin: 34px 0 10px; color: var(--fg); }
+  p  { color: var(--text-2); margin: 0 0 14px; }
+  a  { color: var(--accent); }
+  .lede { color: var(--fg); }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 16px 0;
+  }
+  .card h3 { margin: 0 0 2px; font-size: 16px; font-weight: 600; }
+  .card .sub { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+  .chip {
+    display: inline-block; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); border: 1px solid var(--line); border-radius: 999px;
+    padding: 2px 9px; margin-left: 8px; vertical-align: 2px;
+  }
+  .note { border-left: 2px solid var(--line); padding-left: 14px; color: var(--muted); font-size: 13.5px; }
+  .warn { border-left-color: var(--accent); }
+  code { background: #241F1A; border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; font-size: 13px; }
+  esp-web-install-button { --esp-tools-button-color: var(--accent); }
+  footer { margin-top: 40px; border-top: 1px solid var(--line); padding-top: 16px; color: var(--muted); font-size: 13px; }
+  @media (prefers-color-scheme: light) {
+    body { background: var(--paper); color: #281A14; }
+    p { color: #4A3B31; }
+    .card { background: #EFE6D0; border-color: #D8CDB4; }
+    .card .sub, .note, footer, .chip { color: #6B5A4C; }
+    .note { border-left-color: #D8CDB4; }
+    .warn { border-left-color: var(--accent); }
+    code { background: #E6DCC4; border-color: #D8CDB4; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Xixchil <span class="pron">ZIK-chel</span></h1>
+  <p class="lede">Flash the radio half. The board has no screen and nothing stored on it — this page
+  writes the firmware over USB from your browser, so there is no toolchain to install.</p>
+
+  <div class="card">
+    <h3>ESP32-S3 <span class="chip">2.4 GHz</span></h3>
+    <p class="sub">ESP32-S3-DevKitC-1 N16R8 — 16 MB flash, 8 MB octal PSRAM.</p>
+    <esp-web-install-button manifest="manifest-s3.json"></esp-web-install-button>
+  </div>
+
+  <div class="card">
+    <h3>ESP32-C5 <span class="chip">2.4 + 5 GHz</span></h3>
+    <p class="sub">Waveshare ESP32-C5-WIFI6-KIT-N32R8-U — 32 MB flash, 8 MB PSRAM.</p>
+    <esp-web-install-button manifest="manifest-c5.json"></esp-web-install-button>
+  </div>
+
+  <h2>Before you start</h2>
+  <p class="note">Chrome, Edge or another Chromium browser on desktop. Flashing uses the Web Serial
+  API, which Firefox and Safari do not implement — the button will be greyed out there.</p>
+  <p class="note warn">If the S3 already runs this firmware, its native USB port cannot be auto-reset by
+  the flasher: <strong>hold BOOT and tap RESET</strong> before clicking install, or flash it over the
+  board's UART bridge instead. The C5 goes through a CH343 bridge, so it resets normally — but
+  Windows and macOS need the CH34x driver for it to appear at all.</p>
+
+  <h2>After flashing</h2>
+  <p>The board comes up advertising as <code>SRC</code> over serial and answers the app's commands. It
+  holds nothing — pull power and it is blank, which is the design.</p>
+  <p>You still need the phone app and a crack bridge to use it end to end. Both, plus what is and is not
+  working yet, are in the <a href="https://github.com/bradthurston/xixchil">repository README</a> and the
+  <a href="https://github.com/bradthurston/xixchil/releases">releases</a>.</p>
+
+  <footer>
+    Firmware 0.4.0-lure, built from the source in the repository. Use this on hardware you own.
+    The images here are the same ones the build produces — <code>webflash/README.md</code> records the
+    exact offsets and hashes.
+  </footer>
+</main>
+</body>
+</html>
