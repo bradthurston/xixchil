@@ -39,6 +39,14 @@ tools/protocol.mjs
 
 __pycache__/
 
+# local build artifacts — debug binaries and UI screenshots kept for review.
+# Never tracked: this repo is public. A debug APK has the GITIGNORED live
+# app/www/js/bridge-defaults.js baked into assets/public/, so committing one
+# publishes the bridge URL and token that bridge-defaults.example.js exists to
+# keep out. Curated images belong under docs/ if one ever needs to ship.
+*.apk
+screenshot-*.png
+
 # capture test output
 tools/capture.pcap
 commit-msg.txt
