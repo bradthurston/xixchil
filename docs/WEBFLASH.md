@@ -47,8 +47,8 @@ every step reports success.
 
 | Image | Bytes | sha256 |
 |---|---|---|
-| `xixchil-s3-n16r8-merged.bin` | 1,331,472 | `c339e714d43833562b7ce6840f6329c5afee32c7ac31ad05bdb56adde143ff62` |
-| `xixchil-c5-n32r8-merged.bin` | 1,237,952 | `77fce842d60db07bf5b14c8beedafe7f85bd59967ee82d5823b0f12101b43157` |
+| `xixchil-s3-n16r8-merged.bin` | 1,331,472 | `9840ce5e2a28676400fbd1e5fa0bd62b2417c3717ea19085cfab55ab642d116d` |
+| `xixchil-c5-n32r8-merged.bin` | 1,237,952 | `e05bc200798e5ef4939bf2b4b0b11ab182674cdc61ec087eb1d69b75bb2aa621` |
 
 The C5 image is **verified end to end**, not just built: it was flashed back to the board from the merged
 file at offset 0, and the firmware booted and answered (`PING` → `pong`, `STATUS` → `chip=ESP32-C5`,
