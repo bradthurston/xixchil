@@ -10,11 +10,29 @@ jobs:
   gates:
     name: verify suites
     runs-on: ubuntu-latest
+    env:
+      # verify_import checks that a bridge token exists locally — in CI there is no
+      # gitignored bridge-defaults.js, and there must not be. A dummy satisfies the check
+      # without shipping anyone's real endpoint.
+      BRIDGE_TOKEN: ci-placeholder-not-a-real-token
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      # Several gates cross-check our pcap and 22000 output against the real tools rather
+      # than against our own expectations, which is the only way a format bug gets caught.
+      # hcxpcapngtool is in hcxtools; tshark's own install asks a debconf question, hence
+      # the noninteractive frontend.
+      - name: install the tools the cross-checks use
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            tshark hashcat hcxtools
+          tshark --version | head -1
+          hashcat --version
+          hcxpcapngtool --version | head -1
 
       # The gates themselves import only node builtins; this is here because a couple of
       # them stage copies of the browser modules out of app/www.
