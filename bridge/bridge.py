@@ -59,8 +59,33 @@ MAX_UPLOAD    = 2 * 1024 * 1024     # .22000 files are KB-sized; 2 MB is generou
 STATUS_TIMER  = 3
 PRUNE_EVERY   = 3600
 
+# Where it listens. 0.0.0.0 is the default because the whole point is a phone reaching
+# this over the LAN or a tunnel — but it is the operator's decision, so it is settable,
+# and a non-loopback bind says out loud what it means: anything that can reach the port
+# can spend your GPU, and the token is the only thing in the way.
+HOST = os.environ.get("BRIDGE_HOST", "0.0.0.0")
+PORT = int(os.environ.get("BRIDGE_PORT", "8099"))
+
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 WORDLIST_DIR.mkdir(parents=True, exist_ok=True)
+
+# Jobs hold cracked passphrases in the clear — `cracked.txt` and the potfile are the
+# result, not a log. Default umask leaves those world-readable on a shared host, so the
+# directories and the artifacts are locked down explicitly (see _lock_down below).
+try:
+    JOBS_DIR.chmod(0o700)
+except OSError:
+    pass     # a filesystem that cannot do it (some FUSE mounts) is not a reason to die
+
+
+def _lock_down(path: Path) -> None:
+    """Best-effort 0600 on anything holding a recovered passphrase."""
+    try:
+        if path.exists():
+            path.chmod(0o600)
+    except OSError:
+        pass
+
 
 
 def load_token() -> str:
@@ -84,6 +109,10 @@ class Job:
         self.id = jid
         self.dir = JOBS_DIR / jid
         self.dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.dir.chmod(0o700)      # this is where a recovered passphrase lands
+        except OSError:
+            pass
         self.wordlist = wordlist
         self.rules = rules
         self.state = "queued"
@@ -249,6 +278,11 @@ def run_job(j: Job) -> None:
         j.error = f"hashcat exit {proc.returncode} - see hashcat.log"
     j.save()
 
+    # The result of this job is a password. Lock the three files that hold it, whatever
+    # the process umask was.
+    for f in (j.dir / "cracked.txt", j.dir / "hashcat.potfile", hashfile):
+        _lock_down(f)
+
 
 def worker_loop() -> None:
     while True:
@@ -328,15 +362,22 @@ def get_crack_script():
 
 
 @app.get("/health")
-def health():
-    return {
-        "ok": True,
-        "hashcat": HASHCAT,
-        "mode": HASH_MODE,
-        "queued": len(QUEUE),
-        "wordlists": sorted(p.name for p in WORDLIST_DIR.iterdir() if p.is_file()),
-        "rules": sorted(p.name for p in RULES_DIR.iterdir() if p.is_file()) if RULES_DIR.is_dir() else [],
-    }
+def health(x_token: str | None = Header(default=None)):
+    """Liveness always; the inventory only to a caller holding the token.
+
+    Answering "is it up" cannot require a token, because you test a freshly typed URL
+    before you trust it with one. But the wordlist and rule names are the operator's
+    business, and the path to hashcat is host detail — so those ride along only when
+    the token is presented, which the app does on every call anyway.
+    """
+    out = {"ok": True, "mode": HASH_MODE, "queued": len(QUEUE)}
+    if x_token and secrets.compare_digest(x_token, TOKEN):
+        out.update({
+            "hashcat": HASHCAT,
+            "wordlists": sorted(p.name for p in WORDLIST_DIR.iterdir() if p.is_file()),
+            "rules": sorted(p.name for p in RULES_DIR.iterdir() if p.is_file()) if RULES_DIR.is_dir() else [],
+        })
+    return out
 
 
 @app.get("/wordlists")
@@ -417,4 +458,10 @@ def job_result(job_id: str, x_token: str | None = Header(default=None)):
 if __name__ == "__main__":
     import uvicorn
     print(f"token: {TOKEN}")
-    uvicorn.run(app, host="0.0.0.0", port=8099, log_level="warning")
+    print(f"listening on {HOST}:{PORT}")
+    if HOST not in ("127.0.0.1", "localhost", "::1"):
+        print("  note: bound beyond loopback. Anything that can reach this port can spend your")
+        print("        GPU; the token is the only gate and there is no TLS. Keep it on a trusted")
+        print("        network, or reach it over a tunnel (Tailscale/WireGuard) — not the open")
+        print("        internet. Set BRIDGE_HOST=127.0.0.1 to listen locally only.")
+    uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
