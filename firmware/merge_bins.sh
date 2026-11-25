@@ -20,7 +20,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="$HERE/../webflash"
+OUT="$HERE/../docs"     # GitHub Pages serves main:/docs — that is where the flasher lives
 ESPTOOL="${ESPTOOL:-$HOME/.platformio/penv/bin/esptool}"
 BOOTAPP="${BOOTAPP:-$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin}"
 
@@ -50,9 +50,9 @@ echo "== merging ESP32-C5 (Waveshare N32R8, 32 MB)"
   0x10000 .pio/build/c5-n32r8/firmware.bin
 
 echo
-echo "== written to webflash/"
-for f in "$OUT"/*.bin; do
+echo "== written to docs/ (the Pages site root)"
+for f in "$OUT"/xixchil-*.bin; do
   printf '   %10s  %s  %s\n' "$(stat -c%s "$f")" "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")"
 done
 echo
-echo "Next: paste those sizes and hashes into webflash/README.md, then commit."
+echo "Next: paste those sizes and hashes into docs/WEBFLASH.md, then commit."

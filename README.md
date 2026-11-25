@@ -188,7 +188,13 @@ root. The published build carries no bridge URL or token: point it at your own b
 
 ### Firmware
 
-Two targets. **ESP32-S3-DevKitC-1 N16R8** (16 MB flash, 8 MB octal PSRAM) does 2.4 GHz:
+**Flash from the browser — no toolchain.** <https://bradthurston.github.io/xixchil/> writes either
+target over USB from Chrome or Edge using the Web Serial API. Two things it will tell you: if an S3 is
+already running this firmware its native USB port cannot be auto-reset (hold BOOT, tap RESET, then
+install), and the C5 enumerates through a CH343 bridge so Windows and macOS need the CH34x driver.
+
+Or build it yourself. Two targets. **ESP32-S3-DevKitC-1 N16R8** (16 MB flash, 8 MB octal PSRAM) does
+2.4 GHz:
 
     cd firmware
     pio run -e s3-n16r8                                       # build
