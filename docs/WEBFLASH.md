@@ -67,27 +67,41 @@ A locally built copy is still useful for testing, but it is no longer what the p
 `git pull` will overwrite it. Re-running `firmware/merge_bins.sh` on a developer machine is therefore a
 *local experiment*, not a publish step.
 
-## These builds are not bit-reproducible across machines — measured, not assumed
+## These builds are not bit-reproducible — measured, not assumed
 
-Re-running the merge on the same machine reproduces both images byte for byte. **A different machine does
-not.** Measured between CI and a developer machine, from the same source at the same offsets:
+Re-running the merge on the same machine reproduces both images byte for byte. **Two different machines do
+not, and neither do two CI runs.** Three builds of identical source at identical offsets:
 
-| | CI build | developer machine | bytes differing |
+| build | C5 sha256 | S3 sha256 | sizes |
 |---|---|---|---|
-| C5 | `bab12c8d4edf5359…` | `77fce842d60db07b…` | 333 |
-| S3 | `9c42a87305cb7509…` | `c339e714d4383356…` | 104,099 |
+| developer machine | `77fce842d60db07b…` | `c339e714d4383356…` | identical |
+| CI run 1 | `bab12c8d4edf5359…` | `9c42a87305cb7509…` | identical |
+| CI run 2 | `e05bc200798e5ef4…` | `9840ce5e2a286764…` | identical |
 
-Identical sizes mean the layout is the same; the contents differ (embedded paths and build metadata are the
-usual cause). **This is expected, not a fault** — do not "fix" a hash mismatch by rebuilding.
+Identical sizes mean the layout is the same; the contents differ (embedded paths, build metadata and
+timestamps are the usual causes). **This is expected, not a fault — do not "fix" a hash mismatch by
+rebuilding**, and do not read a differing hash as a differing firmware.
 
-**Both C5 images are verified on hardware, not just built:**
-- the developer-machine image (`77fce842…`) was flashed at offset 0 and booted;
-- the **CI image (`bab12c8d…`) was flashed the same way and booted** — `PING` → `pong`, `STATUS` →
-  `chip=ESP32-C5`, `bands=2.4+5`, `flash=32768 KB`.
+Consequences worth knowing:
 
-So the byte difference is build metadata and not behaviour, at least for the C5. The S3 image has still
-never been flashed, by either builder, because the S3 is not on the bench — say that plainly rather than
-implying otherwise.
+- **Every firmware workflow run rewrites ~2.5 MB of committed binaries**, even when the source has not
+  changed. On a tag that is the point. On a dispatch it is why `write_back` defaults to `false` — it exists
+  to exercise the write-back path, not for routine use.
+- **The hash in this file is only true of the build that wrote it.** It is rewritten from the files by
+  `firmware/update_flash_doc.py` on every write-back, so it cannot drift from what the page serves, but it
+  says nothing about any other build.
+- Making this reproducible is real work (`-ffile-prefix-map`, no embedded timestamps, pinned toolchain) and
+  has not been done. Until then, "same firmware" has to be argued from the source and the offsets, not from
+  a hash.
+
+### What is verified, and by whom
+
+- Developer-machine C5 image (`77fce842…`) — flashed at offset 0, booted.
+- CI run-1 C5 image (`bab12c8d…`) — flashed at offset 0, booted.
+- **CI run-2 C5 image (`e05bc200…`) — the one the page currently serves — flashed at offset 0, booted**:
+  `PING` → `pong`, `STATUS` → `chip=ESP32-C5`, `bands=2.4+5`, `flash=32768 KB`.
+- **The S3 image has never been flashed, by any build.** The S3 is not on the bench. Say that plainly rather
+  than letting three verified C5 images imply the S3 is covered.
 
 ## How the page flashes
 
