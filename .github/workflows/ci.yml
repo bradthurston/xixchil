@@ -9,7 +9,10 @@ on:
 jobs:
   gates:
     name: verify suites
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest. The suites cross-check against hashcat, and hashcat needs a
+    # working OpenCL platform — ubuntu-latest moved to 26.04, where pocl does not present one
+    # and every crack check failed for that reason. LTS keeps CI deterministic.
+    runs-on: ubuntu-24.04
     env:
       # verify_import checks that a bridge token exists locally — in CI there is no
       # gitignored bridge-defaults.js, and there must not be. A dummy satisfies the check
@@ -29,7 +32,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            tshark hashcat hcxtools pocl-opencl-icd
+            tshark hashcat hcxtools pocl-opencl-icd clinfo
           tshark --version | head -1
           hashcat --version
           hcxpcapngtool --version | head -1
@@ -37,6 +40,7 @@ jobs:
           # "ATTENTION! No OpenCL, HIP or CUDA compatible platform found." pocl is the CPU
           # implementation, which is all these small wordlist checks need.
           hashcat -I 2>&1 | head -12
+          clinfo -l 2>&1 | head -6
 
       # The gates themselves import only node builtins; this is here because a couple of
       # them stage copies of the browser modules out of app/www.
@@ -69,7 +73,7 @@ jobs:
 
   android:
     name: android build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
